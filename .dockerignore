@@ -1,0 +1,12 @@
+venv/
+.env
+.git/
+.gitignore
+*.log
+virtual_portfolio.json
+processed_news.json
+__pycache__/
+*.pyc
+.agents/
+.gemini/
+scratch/

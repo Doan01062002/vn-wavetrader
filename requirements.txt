@@ -1,0 +1,14 @@
+vnstock
+pandas
+numpy
+scipy
+ta
+PyPortfolioOpt
+streamlit
+streamlit-lightweight-charts
+google-generativeai
+python-dotenv
+backtesting
+plotly
+bokeh>=2.4.0,<3.0.0
+psycopg2-binary

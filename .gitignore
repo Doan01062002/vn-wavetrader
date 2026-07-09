@@ -1,0 +1,20 @@
+# Python virtual environment
+venv/
+.venv/
+env/
+
+# Sensitive configuration keys (CRITICAL)
+.env
+
+# Cache and temporary folders
+__pycache__/
+*.pyc
+.gemini/
+.agents/
+temp_charts/
+
+# Local databases and logs
+*.log
+virtual_portfolio.json
+processed_news.json
+optimized_params.json

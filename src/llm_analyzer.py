@@ -1,0 +1,138 @@
+import os
+import logging
+import google.generativeai as genai
+from dotenv import load_dotenv
+from config import GEMINI_CONFIG
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Load biến môi trường từ .env
+load_dotenv()
+
+def init_gemini():
+    """
+    Khởi tạo Gemini API Client.
+    """
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key or api_key == "your_gemini_api_key_here":
+        logging.warning("GEMINI_API_KEY chưa được thiết lập trong file .env")
+        return None
+    try:
+        genai.configure(api_key=api_key)
+        return genai.GenerativeModel(GEMINI_CONFIG["model_name"])
+    except Exception as e:
+        logging.error(f"Lỗi khi khởi tạo Gemini API: {e}")
+        return None
+
+def analyze_stock_with_ai(symbol: str, price_data_summary: dict, technical_signals: dict, financial_ratios: dict = None, news_list: list = None, canslim_data: dict = None) -> str:
+    """
+    Sử dụng Gemini API để sinh báo cáo phân tích cổ phiếu lướt sóng chuyên sâu.
+    """
+    model = init_gemini()
+    
+    # Chuẩn bị thông tin đầu vào cho Prompt
+    signals_str = "\n".join([f"- {d}" for d in technical_signals.get("details", [])])
+    
+    fin_str = ""
+    if financial_ratios is not None and not financial_ratios.empty:
+        # Lấy dòng mới nhất của các chỉ số tài chính (nếu có)
+        try:
+            latest_fin = financial_ratios.iloc[0].to_dict() if len(financial_ratios) > 0 else {}
+            fin_str = "\n".join([f"- {k}: {v}" for k, v in latest_fin.items() if pd.notna(v)])
+        except Exception:
+            fin_str = "Không có dữ liệu tài chính chi tiết."
+    else:
+        fin_str = "Không có dữ liệu tài chính chi tiết."
+
+    news_str = ""
+    if news_list:
+        news_str = "\n".join([f"- [{n.get('time')}]: {n.get('title')}" for n in news_list])
+    else:
+        news_str = "Không có thông tin tin tức mới."
+
+    canslim_str = ""
+    if canslim_data:
+        canslim_str = f"- Điểm số CANSLIM tổng hợp: {canslim_data.get('total_score', 'N/A')}/100 (Phân loại: {canslim_data.get('rating', 'NEUTRAL')})\n"
+        canslim_str += "Chi tiết điểm các thành phần:\n"
+        for k, v in canslim_data.get('details', {}).items():
+            canslim_str += f"  * {k} ({v.get('score')}đ): {v.get('desc')}\n"
+    else:
+        canslim_str = "Chưa cấu hình hoặc thiếu dữ liệu chấm điểm CANSLIM."
+
+    prompt = f"""
+Bạn là một chuyên gia phân tích kỹ thuật và quản lý danh mục đầu tư chứng khoán chuyên nghiệp tại thị trường Việt Nam.
+Hãy viết một báo cáo phân tích lướt sóng ngắn hạn (swing trading) cho mã cổ phiếu: **{symbol}**.
+
+Dưới đây là dữ liệu giao dịch gần nhất của cổ phiếu này:
+- Giá hiện tại: {price_data_summary.get('close', 'N/A')} (nghìn VNĐ)
+- Giá cao nhất trong ngày: {price_data_summary.get('high', 'N/A')}
+- Giá thấp nhất trong ngày: {price_data_summary.get('low', 'N/A')}
+- Khối lượng giao dịch: {price_data_summary.get('volume', 'N/A')} (so với trung bình 20 phiên: {price_data_summary.get('volume_sma20', 'N/A')})
+
+Dữ liệu tín hiệu kỹ thuật tự động quét được:
+- Trạng thái tổng quát: {technical_signals.get('status', 'NEUTRAL')}
+- Điểm số kỹ thuật (-5 đến +5): {technical_signals.get('score', 0)}
+- Xu hướng ngắn hạn: {technical_signals.get('trend', 'Neutral')}
+- Trạng thái RSI (14): {technical_signals.get('rsi', 50):.2f}
+- Trạng thái MACD: {technical_signals.get('macd_signal', 'Neutral')}
+- Chi tiết tín hiệu quét được:
+{signals_str}
+
+Các chỉ số cơ bản của doanh nghiệp:
+{fin_str}
+
+Chấm điểm chất lượng cổ phiếu theo tiêu chí CANSLIM / Minervini:
+{canslim_str}
+
+Tin tức mới nhận được liên quan đến doanh nghiệp:
+{news_str}
+
+Yêu cầu báo cáo bao gồm các phần sau (sử dụng định dạng Markdown rõ ràng, chuyên nghiệp):
+1. **Đánh giá xu hướng ngắn hạn**: Giải thích xu hướng giá hiện tại dựa trên các đường EMA, RSI, MACD, chỉ báo xu hướng nâng cao (SuperTrend) và khối lượng giao dịch. Tín hiệu này mạnh hay yếu?
+2. **Đánh giá điểm cơ bản & CANSLIM & Tin tức**: Phân tích sức khỏe tài chính doanh nghiệp (P/E, P/B, ROE...) và điểm số chất lượng CANSLIM (xem cổ phiếu này có đà tăng trưởng đột phá doanh thu/lợi nhuận thực chất không) kết hợp tin tức gần đây (tin tức tốt/xấu/trung tính) để bổ trợ cho phân tích kỹ thuật.
+3. **Kế hoạch giao dịch lướt sóng**:
+   - Khuyến nghị hành động (MUA mạnh, MUA, THEO DÕI, BÁN, BÁN mạnh).
+   - Vùng giá mua đề xuất (nếu khuyến nghị mua).
+   - Điểm chốt lời mục tiêu (Target).
+   - Điểm dừng lỗ bắt buộc (Stop-loss) (gợi ý dựa trên ATR hoặc hỗ trợ cứng).
+4. **Cảnh báo rủi ro**: Liệt kê các rủi ro (thị trường chung VN-Index, rủi ro thanh khoản, rủi ro tin tức tiêu cực của mã này).
+
+Hãy viết báo cáo bằng tiếng Việt, giọng văn khách quan, sắc bén, chuyên nghiệp của một chuyên gia phân tích.
+"""
+
+    if not model:
+        # Báo cáo mẫu/mô phỏng nếu không có API Key
+
+        mock_report = f"""
+### 🚨 Trợ lý AI WaveTrader - Chế độ dùng thử (Demo)
+
+*Lưu ý: Bạn chưa cấu hình `GEMINI_API_KEY` trong file `.env` hoặc Key không hợp lệ. Đây là báo cáo tự động dựa trên quy tắc kỹ thuật cứng.*
+
+#### 1. Đánh giá xu hướng ngắn hạn cho **{symbol}**
+- **Trạng thái**: {technical_signals.get('status', 'NEUTRAL')}
+- **Xu hướng**: {technical_signals.get('trend', 'Neutral')}
+- Giá hiện tại là {price_data_summary.get('close', 'N/A')} nghìn VNĐ. Chỉ số RSI đang ở mức {technical_signals.get('rsi', 50):.2f}.
+- Tín hiệu kỹ thuật tự động ghi nhận:
+{signals_str}
+
+#### 2. Kế hoạch giao dịch lướt sóng đề xuất:
+- **Khuyến nghị**: **{technical_signals.get('status', 'NEUTRAL')}**
+- **Vùng giá mua**: Xem xét mua quanh giá hiện tại nếu thị trường chung ổn định.
+- **Điểm dừng lỗ (Stop-loss)**: Đề xuất đặt dưới mức giá thấp nhất 10 phiên hoặc cách giá hiện tại khoảng 5-7%.
+- **Điểm chốt lời (Target)**: Đề xuất chốt lời từng phần khi đạt lợi nhuận 8% - 15% hoặc khi giá chạm biên trên Bollinger Bands.
+
+*👉 Vui lòng thêm `GEMINI_API_KEY` vào file `.env` ở thư mục gốc để kích hoạt báo cáo phân tích thông minh và chi tiết từ AI Gemini.*
+"""
+        return mock_report
+        
+    try:
+        logging.info(f"Đang gọi Gemini API để phân tích mã {symbol}...")
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        logging.error(f"Lỗi khi gọi Gemini API cho mã {symbol}: {e}")
+        return f"Không thể tạo báo cáo AI do lỗi kết nối hoặc giới hạn API: {e}"
+
+if __name__ == "__main__":
+    # Test thử hàm tạo báo cáo mẫu
+    print(analyze_stock_with_ai("HPG", {"close": 28.5, "high": 28.7, "low": 28.2, "volume": 12000000, "volume_sma20": 10000000}, {"status": "BUY", "score": 2.0, "trend": "BULLISH", "rsi": 62.5, "macd_signal": "Golden Cross", "details": ["Giá vượt EMA20", "MACD cắt lên đường Tín hiệu"]}))
