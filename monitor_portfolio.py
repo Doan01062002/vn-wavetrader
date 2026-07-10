@@ -436,8 +436,8 @@ def daily_report_scheduler_loop():
             # Chỉ chạy từ Thứ 2 đến Thứ 6 (ngày giao dịch)
             if vn_now.weekday() < 5:
                 today_str = vn_now.strftime("%Y-%m-%d")
-                # Để test, trigger lập tức khi khởi động, sau khi test xong sẽ khôi phục lại giờ
-                if last_sent_date != today_str:
+                # Hẹn giờ từ lúc 15:15 đến hết khung giờ 15:00-16:00
+                if (vn_now.hour == 15 and vn_now.minute >= 15) and last_sent_date != today_str:
                     logging.info("[SCHEDULER] Đến giờ tự động gửi báo cáo hàng ngày (15:15)...")
                     from src.notifier import send_daily_report_to_telegram
                     success = send_daily_report_to_telegram()
