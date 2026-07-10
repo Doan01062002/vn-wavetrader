@@ -49,8 +49,5 @@ GEMINI_CONFIG = {
 # symbol: Mã cổ phiếu
 # entry_price: Giá mua của bạn (Đơn vị: nghìn VNĐ, ví dụ FPT giá 135.5)
 # stop_loss: Giá cắt lỗ cố định (Ví dụ: 128.0). Nếu đặt là None, hệ thống tự động đặt -5% so với giá mua.
-MY_PORTFOLIO = [
-    {"symbol": "FPT", "entry_price": 72.0, "stop_loss": 69.5},
-    {"symbol": "HPG", "entry_price": 28.0, "stop_loss": 26.5}
-]
+MY_PORTFOLIO = []
 
