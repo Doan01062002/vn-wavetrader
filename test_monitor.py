@@ -40,6 +40,11 @@ try:
         close_price = df_quote.iloc[0]["close_price"]
         if close_price <= 0:
             close_price = df_quote.iloc[0].get("reference_price", 0)
+        
+        # Chuẩn hóa đơn vị giá (từ VNĐ về nghìn VNĐ nếu API trả về VNĐ thực tế)
+        if close_price > 1000:
+            close_price /= 1000.0
+            
         print(f"Giá FPT thực tế hiện tại trên sàn: {close_price}")
         print(f"Ngưỡng Cắt Lỗ thử nghiệm: 95.0")
         

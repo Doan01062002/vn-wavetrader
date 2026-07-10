@@ -219,6 +219,10 @@ def run_portfolio_monitor():
                         logging.warning(f"Giá khớp lệnh và giá tham chiếu của {symbol} đều không hợp lệ. Bỏ qua.")
                         continue
                 
+                # Chuẩn hóa đơn vị giá (từ VNĐ về nghìn VNĐ nếu API trả về VNĐ thực tế)
+                if close_price > 1000:
+                    close_price /= 1000.0
+                
                 current_prices[symbol] = close_price
                 
                 # Tìm xem mã này có trong MY_PORTFOLIO để chạy cảnh báo thực tế không
@@ -414,13 +418,56 @@ def telegram_polling_loop():
             logging.error(f"[BOT] Lỗi trong vòng lặp lắng nghe tương tác Telegram: {e}")
             time.sleep(5)
 
+def daily_report_scheduler_loop():
+    """
+    Luồng chạy độc lập kiểm tra và tự động gửi báo cáo hàng ngày lúc 15:15 (GMT+7) từ Thứ 2 - Thứ 6.
+    """
+    logging.info("[SCHEDULER] Khởi động luồng hẹn giờ báo cáo hàng ngày thành công.")
+    from datetime import datetime, timedelta, timezone
+    
+    def get_vietnam_now():
+        return datetime.now(timezone(timedelta(hours=7)))
+        
+    last_sent_date = ""
+    
+    while True:
+        try:
+            vn_now = get_vietnam_now()
+            # Chỉ chạy từ Thứ 2 đến Thứ 6 (ngày giao dịch)
+            if vn_now.weekday() < 5:
+                today_str = vn_now.strftime("%Y-%m-%d")
+                # Hẹn giờ từ lúc 15:15 đến hết khung giờ 15:00-16:00
+                if (vn_now.hour == 15 and vn_now.minute >= 15) and last_sent_date != today_str:
+                    logging.info("[SCHEDULER] Đến giờ tự động gửi báo cáo hàng ngày (15:15)...")
+                    from src.notifier import send_daily_report_to_telegram
+                    success = send_daily_report_to_telegram()
+                    if success:
+                        logging.info("[SCHEDULER] Tự động gửi báo cáo EOD thành công.")
+                        last_sent_date = today_str
+                    else:
+                        logging.error("[SCHEDULER] Tự động gửi báo cáo EOD thất bại. Sẽ thử lại sau 60 giây.")
+                        time.sleep(60)
+                        continue
+            
+            # Quét mỗi 30 giây để kiểm tra giờ
+            time.sleep(30)
+        except Exception as e:
+            logging.error(f"[SCHEDULER] Lỗi trong luồng hẹn giờ báo cáo: {e}")
+            time.sleep(60)
+
 if __name__ == "__main__":
     try:
-        # Khởi chạy luồng Telegram Bot Polling lắng nghe tương tác
         import threading
+        
+        # 1. Khởi chạy luồng Telegram Bot Polling lắng nghe tương tác
         bot_thread = threading.Thread(target=telegram_polling_loop, daemon=True)
         bot_thread.start()
         
+        # 2. Khởi chạy luồng Scheduler tự động gửi báo cáo cuối ngày EOD lúc 15:15
+        scheduler_thread = threading.Thread(target=daily_report_scheduler_loop, daemon=True)
+        scheduler_thread.start()
+        
+        # 3. Chạy luồng giám sát chính
         run_portfolio_monitor()
     except KeyboardInterrupt:
         logging.info("Tiến trình giám sát danh mục đã bị dừng bởi người dùng.")

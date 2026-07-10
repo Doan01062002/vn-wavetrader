@@ -30,7 +30,7 @@ def get_atr_for_symbol(symbol: str) -> float:
     try:
         from src.data_fetcher import get_stock_ohlcv
         from src.indicators import calculate_indicators
-        df = get_stock_ohlcv(symbol, length=50)
+        df = get_stock_ohlcv(symbol, length=100)
         if not df.empty:
             df = calculate_indicators(df, symbol=symbol)
             if 'atr' in df.columns and not df['atr'].empty:

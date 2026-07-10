@@ -89,7 +89,7 @@ def send_daily_report_to_telegram() -> bool:
         uptrend_count = 0
         scanned_count = 0
         for vn30_sym in vn30_symbols:
-            df_vn30 = get_stock_ohlcv(vn30_sym, length=50)
+            df_vn30 = get_stock_ohlcv(vn30_sym, length=100)
             if not df_vn30.empty:
                 from src.indicators import calculate_indicators
                 df_vn30 = calculate_indicators(df_vn30, symbol=vn30_sym)
