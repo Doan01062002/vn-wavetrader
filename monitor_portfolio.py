@@ -4,6 +4,7 @@ import time
 import logging
 from datetime import datetime
 import pandas as pd
+import threading
 from vnstock import Market
 
 # Add project root to path
@@ -457,8 +458,6 @@ def daily_report_scheduler_loop():
 
 if __name__ == "__main__":
     try:
-        import threading
-        
         # 1. Khởi chạy luồng Telegram Bot Polling lắng nghe tương tác
         bot_thread = threading.Thread(target=telegram_polling_loop, daemon=True)
         bot_thread.start()
