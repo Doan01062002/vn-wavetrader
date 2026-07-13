@@ -2,7 +2,7 @@ import os
 import sys
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 import threading
 from vnstock import Market
@@ -56,15 +56,15 @@ PROCESSED_NEWS_FILE = "processed_news.json"
 
 def analyze_news_sentiment_realtime(symbol: str, title: str) -> float:
     """
-    Sử dụng Gemini để phân tích xem tiêu đề tin tức có phải là tin tức cực xấu (tiêu cực) ảnh hưởng đến giá cổ phiếu hay không.
+    Sử dụng Groq API để phân tích xem tiêu đề tin tức có phải là tin tức cực xấu (tiêu cực) ảnh hưởng đến giá cổ phiếu hay không.
     Trả về điểm số từ -1.0 (cực kỳ tiêu cực) đến 1.0 (cực kỳ tích cực).
     Tích hợp cơ chế tự động thử lại (retry) khi gặp lỗi giới hạn tần suất gọi API (429 Rate Limit).
     """
-    import google.generativeai as genai
-    from config import GEMINI_CONFIG
+    import requests
     
-    api_key = os.getenv("GEMINI_API_KEY")
+    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
+        logging.warning("GROQ_API_KEY chưa được thiết lập trong file .env")
         return 0.0
         
     prompt = f"""
@@ -75,31 +75,46 @@ def analyze_news_sentiment_realtime(symbol: str, title: str) -> float:
     Hãy chỉ trả về duy nhất một con số thực nằm trong khoảng từ -1.0 (cực kỳ tiêu cực, nguy hại, giá có thể giảm sàn ngay lập tức) đến 1.0 (cực kỳ tích cực). Không trả về bất kỳ từ ngữ hay giải thích nào khác.
     """
     
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "llama-3.1-8b-instant",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1
+    }
+    
     max_retries = 3
     delay = 6.0
     
     for attempt in range(max_retries):
         try:
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(GEMINI_CONFIG["model_name"])
-            response = model.generate_content(prompt)
-            score_str = response.text.strip()
-            try:
-                return float(score_str)
-            except ValueError:
-                import re
-                match = re.search(r"[-+]?\d*\.\d+|\d+", score_str)
-                if match:
-                    return float(match.group())
-                return 0.0
-        except Exception as e:
-            if "429" in str(e) or "quota" in str(e).lower() or "limit" in str(e).lower():
-                logging.warning(f"Chạm giới hạn gọi API Gemini (429). Thử lại lần {attempt+1}/{max_retries} sau {delay} giây...")
+            response = requests.post(url, json=payload, headers=headers, timeout=10)
+            if response.status_code == 200:
+                result = response.json()
+                score_str = result["choices"][0]["message"]["content"].strip()
+                try:
+                    return float(score_str)
+                except ValueError:
+                    import re
+                    match = re.search(r"[-+]?\d*\.\d+|\d+", score_str)
+                    if match:
+                        return float(match.group())
+                    return 0.0
+            elif response.status_code == 429:
+                logging.warning(f"Chạm giới hạn gọi API Groq (429). Thử lại lần {attempt+1}/{max_retries} sau {delay} giây...")
                 time.sleep(delay)
                 delay *= 2
             else:
-                logging.error(f"Lỗi phân tích sắc thái tin tức {symbol} bằng Gemini: {e}")
+                logging.error(f"Lỗi phản hồi Groq API ({response.status_code}): {response.text}")
                 break
+        except Exception as e:
+            logging.error(f"Lỗi kết nối hoặc xử lý Groq API: {e}")
+            time.sleep(delay)
+            delay *= 2
                 
     return 0.0
 
@@ -158,7 +173,7 @@ def is_market_hours() -> bool:
     Kiểm tra xem thời điểm hiện tại có đang trong giờ giao dịch Việt Nam hay không.
     Thứ 2 - Thứ 6: Sáng (9:00 - 11:30), Chiều (13:00 - 14:45).
     """
-    now = datetime.now()
+    now = datetime.now(timezone(timedelta(hours=7)))
     # Thứ 7 (5) và Chủ nhật (6) đóng cửa
     if now.weekday() >= 5:
         return False
@@ -190,7 +205,7 @@ def run_portfolio_monitor():
             continue
             
         logging.info("Bắt đầu chu kỳ quét giá thời gian thực...")
-        today_str = datetime.now().strftime("%Y-%m-%d")
+        today_str = datetime.now(timezone(timedelta(hours=7))).strftime("%Y-%m-%d")
         
         # 2. Tải danh mục ảo để lấy thêm các mã cần giám sát
         port = load_portfolio()

@@ -87,7 +87,7 @@ def evaluate_sentiment_with_ai(news_list: list) -> dict:
         
     model = init_gemini()
     if not model:
-        logger.warning("Không khởi tạo được Gemini AI, sử dụng đánh giá trung tính mặc định.")
+        logger.warning("Không khởi tạo được Groq AI, sử dụng đánh giá trung tính mặc định.")
         return {
             "score": 0.0,
             "label": "TRUNG TÍNH (Neutral)",
@@ -177,7 +177,7 @@ Cấu trúc JSON yêu cầu trả về chính xác như sau (không kèm mã mar
         }
         
     except Exception as e:
-        logger.error(f"Lỗi khi Gemini phân tích tâm lý tin tức: {e}")
+        logger.error(f"Lỗi khi Groq phân tích tâm lý tin tức: {e}")
         # Trả về kết quả trung tính nếu lỗi
         return {
             "score": 0.0,

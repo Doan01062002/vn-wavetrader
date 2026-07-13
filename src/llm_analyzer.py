@@ -1,28 +1,57 @@
 import os
 import logging
-import google.generativeai as genai
+import pandas as pd
 from dotenv import load_dotenv
-from config import GEMINI_CONFIG
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # Load biến môi trường từ .env
 load_dotenv()
 
+class GroqClientWrapper:
+    def __init__(self, api_key: str, model_name: str = "llama-3.3-70b-versatile"):
+        self.api_key = api_key
+        self.model_name = model_name
+        self.url = "https://api.groq.com/openai/v1/chat/completions"
+        self.headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
+    def generate_content(self, prompt: str) -> object:
+        import requests
+        payload = {
+            "model": self.model_name,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1
+        }
+        try:
+            response = requests.post(self.url, json=payload, headers=self.headers, timeout=30)
+            if response.status_code == 200:
+                result = response.json()
+                text_content = result["choices"][0]["message"]["content"]
+                
+                # Giả lập đối tượng phản hồi của Gemini để tương thích ngược
+                class ResponseMock:
+                    def __init__(self, text):
+                        self.text = text
+                return ResponseMock(text_content)
+            else:
+                logging.error(f"Lỗi Groq API ({response.status_code}): {response.text}")
+                raise Exception(f"Groq API error ({response.status_code}): {response.text}")
+        except Exception as e:
+            logging.error(f"Lỗi gọi Groq API: {e}")
+            raise e
+
 def init_gemini():
     """
-    Khởi tạo Gemini API Client.
+    Khởi tạo Groq API Client dưới dạng Wrapper để tương thích ngược.
     """
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key or api_key == "your_gemini_api_key_here":
-        logging.warning("GEMINI_API_KEY chưa được thiết lập trong file .env")
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        logging.warning("GROQ_API_KEY chưa được thiết lập trong file .env")
         return None
-    try:
-        genai.configure(api_key=api_key)
-        return genai.GenerativeModel(GEMINI_CONFIG["model_name"])
-    except Exception as e:
-        logging.error(f"Lỗi khi khởi tạo Gemini API: {e}")
-        return None
+    return GroqClientWrapper(api_key, model_name="llama-3.3-70b-versatile")
 
 def analyze_stock_with_ai(symbol: str, price_data_summary: dict, technical_signals: dict, financial_ratios: dict = None, news_list: list = None, canslim_data: dict = None) -> str:
     """
@@ -121,16 +150,16 @@ Hãy viết báo cáo bằng tiếng Việt, giọng văn khách quan, sắc bé
 - **Điểm dừng lỗ (Stop-loss)**: Đề xuất đặt dưới mức giá thấp nhất 10 phiên hoặc cách giá hiện tại khoảng 5-7%.
 - **Điểm chốt lời (Target)**: Đề xuất chốt lời từng phần khi đạt lợi nhuận 8% - 15% hoặc khi giá chạm biên trên Bollinger Bands.
 
-*👉 Vui lòng thêm `GEMINI_API_KEY` vào file `.env` ở thư mục gốc để kích hoạt báo cáo phân tích thông minh và chi tiết từ AI Gemini.*
+*👉 Vui lòng thêm `GROQ_API_KEY` vào file `.env` ở thư mục gốc để kích hoạt báo cáo phân tích thông minh và chi tiết từ AI Groq.*
 """
         return mock_report
         
     try:
-        logging.info(f"Đang gọi Gemini API để phân tích mã {symbol}...")
+        logging.info(f"Đang gọi Groq API để phân tích mã {symbol}...")
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        logging.error(f"Lỗi khi gọi Gemini API cho mã {symbol}: {e}")
+        logging.error(f"Lỗi khi gọi Groq API cho mã {symbol}: {e}")
         return f"Không thể tạo báo cáo AI do lỗi kết nối hoặc giới hạn API: {e}"
 
 if __name__ == "__main__":
