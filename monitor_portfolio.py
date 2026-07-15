@@ -688,17 +688,17 @@ def telegram_polling_loop():
                         logging.warning(f"[BOT] Nhận tin nhắn từ Chat ID lạ: {chat_id}. Bỏ qua để bảo mật.")
                         continue
                         
-                    if text in ["/start", "/menu"] or text.lower() == "menu":
+                    if text.startswith("/start") or text.startswith("/menu") or text.lower() == "menu":
                         send_telegram_menu(token, chat_id)
-                    elif text in ["🔮 Xem dự báo", "/forecast"]:
+                    elif text == "🔮 Xem dự báo" or text.startswith("/forecast"):
                         threading.Thread(target=handle_forecast_request, args=(token, chat_id), daemon=True).start()
-                    elif text in ["💰 Xem số dư", "/balance"]:
+                    elif text == "💰 Xem số dư" or text.startswith("/balance"):
                         threading.Thread(target=handle_balance_request, args=(token, chat_id), daemon=True).start()
-                    elif text in ["📜 Lịch sử lệnh", "/history"]:
+                    elif text == "📜 Lịch sử lệnh" or text.startswith("/history"):
                         threading.Thread(target=handle_history_request, args=(token, chat_id), daemon=True).start()
-                    elif text in ["📋 Danh mục", "/watchlist"]:
+                    elif text == "📋 Danh mục" or text.startswith("/watchlist"):
                         threading.Thread(target=handle_watchlist_request, args=(token, chat_id), daemon=True).start()
-                    elif text in ["❓ Trợ giúp", "/help"]:
+                    elif text == "❓ Trợ giúp" or text.startswith("/help"):
                         threading.Thread(target=handle_help_request, args=(token, chat_id), daemon=True).start()
                         
                 # 2. Xử lý callback từ nút bấm
