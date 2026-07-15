@@ -31,12 +31,13 @@ for sector, syms in SECTORS.items():
 
 load_dotenv()
 
-def send_telegram_message(message: str, reply_markup: dict = None) -> bool:
+def send_telegram_message(message: str, reply_markup: dict = None, chat_id: str = None) -> bool:
     """
     Gửi tin nhắn Markdown tới Telegram thông qua Bot API.
     """
     token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not chat_id:
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
     
     if not token or token == "your_telegram_bot_token_here":
         logging.warning("Chưa cấu hình TELEGRAM_BOT_TOKEN trong file .env")
@@ -74,7 +75,7 @@ def send_telegram_message(message: str, reply_markup: dict = None) -> bool:
         logging.error(f"Lỗi kết nối gửi Telegram: {e}")
         return False
 
-def send_daily_report_to_telegram() -> bool:
+def send_daily_report_to_telegram(chat_id: str = None) -> bool:
     """
     Quét toàn bộ cổ phiếu theo dõi, chạy tối ưu và gửi báo cáo phân tích lướt sóng về Telegram.
     """
@@ -296,7 +297,7 @@ def send_daily_report_to_telegram() -> bool:
     footer += "📈 _Chúc các bạn lướt sóng thành công! VN-WaveTrader System._"
     
     full_message = header + body + ai_report_text + footer
-    main_sent = send_telegram_message(full_message)
+    main_sent = send_telegram_message(full_message, chat_id=chat_id)
     
     # Gửi riêng từng thẻ tín hiệu Mua để người dùng bấm nút tương tác (Chỉ gửi khi thị trường không rủi ro)
     if not is_market_risky and not df_buys.empty:
@@ -345,7 +346,7 @@ def send_daily_report_to_telegram() -> bool:
                     ]
                 ]
             }
-            send_telegram_message(card_msg, reply_markup=reply_markup)
+            send_telegram_message(card_msg, reply_markup=reply_markup, chat_id=chat_id)
             
     return main_sent
 

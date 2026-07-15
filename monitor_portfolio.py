@@ -346,6 +346,306 @@ def run_portfolio_monitor():
         logging.info("Đã quét xong chu kỳ. Nghỉ 2 phút...")
         time.sleep(120)
 
+def send_telegram_menu(token: str, chat_id: int):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    menu_markup = {
+        "keyboard": [
+            [{"text": "🔮 Xem dự báo"}, {"text": "💰 Xem số dư"}],
+            [{"text": "📜 Lịch sử lệnh"}, {"text": "📋 Danh mục"}],
+            [{"text": "❓ Trợ giúp"}]
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": False
+    }
+    payload = {
+        "chat_id": chat_id,
+        "text": "👋 Xin chào! Tôi là VN-WaveTrader Bot.\n\nHãy chọn một trong các chức năng dưới đây từ menu để tương tác:",
+        "reply_markup": menu_markup
+    }
+    try:
+        import requests
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logging.error(f"[BOT] Lỗi gửi menu: {e}")
+
+def handle_forecast_request(token: str, chat_id: int):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        import requests
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": "⏳ *Hệ thống bắt đầu quét dữ liệu & phân tích thị trường VN30...*\n\n_Vui lòng đợi khoảng 30-60 giây để chạy tính năng chỉ báo kỹ thuật, tối ưu danh mục HRP và nhận định chuyên sâu từ AI Gemini..._",
+            "parse_mode": "Markdown"
+        }, timeout=10)
+    except Exception as e:
+        logging.error(f"[BOT] Lỗi gửi thông báo bắt đầu dự báo: {e}")
+        
+    try:
+        from src.notifier import send_daily_report_to_telegram
+        success = send_daily_report_to_telegram(chat_id=str(chat_id))
+        if not success:
+            import requests
+            requests.post(url, json={
+                "chat_id": chat_id,
+                "text": "❌ *Lỗi:* Không thể chạy phân tích dữ liệu hoặc gửi báo cáo. Vui lòng kiểm tra log trên server.",
+                "parse_mode": "Markdown"
+            }, timeout=10)
+    except Exception as e:
+        logging.error(f"[BOT] Lỗi khi chạy dự báo: {e}")
+        import requests
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": f"❌ *Lỗi hệ thống khi phân tích:* {str(e)}",
+            "parse_mode": "Markdown"
+        }, timeout=10)
+
+def handle_balance_request(token: str, chat_id: int):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        import requests
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": "⏳ *Đang kết nối database và truy vấn bảng giá trực tiếp...*",
+            "parse_mode": "Markdown"
+        }, timeout=10)
+    except Exception as e:
+        logging.error(f"[BOT] Lỗi gửi thông báo số dư: {e}")
+        
+    try:
+        import requests
+        from src.paper_trader import load_portfolio
+        from vnstock import Market
+        
+        portfolio = load_portfolio()
+        cash = portfolio.get("cash", 100000000.0)
+        positions = portfolio.get("positions", [])
+        
+        if not positions:
+            msg = f"💰 *BÁO CÁO SỐ DƯ VÍ ẢO* 💰\n" \
+                  f"───────────────────\n" \
+                  f"- 💵 *Tiền mặt:* **{cash:,.0f}đ**\n" \
+                  f"- 📂 *Danh mục:* Không có vị thế nào đang nắm giữ.\n" \
+                  f"- 📈 *Tổng tài sản (Net Worth):* **{cash:,.0f}đ**"
+            requests.post(url, json={
+                "chat_id": chat_id,
+                "text": msg,
+                "parse_mode": "Markdown"
+            }, timeout=10)
+            return
+            
+        m = Market()
+        total_buy_val = 0.0
+        total_curr_val = 0.0
+        pos_list = []
+        
+        for pos in positions:
+            sym = pos["symbol"]
+            qty = pos["quantity"]
+            buy_price = pos["buy_price"]
+            
+            curr_price = buy_price
+            try:
+                df_quote = m.equity(sym).quote()
+                if not df_quote.empty:
+                    p = df_quote.iloc[0]["close_price"]
+                    if p > 0:
+                        if p > 1000:
+                            p /= 1000.0
+                        curr_price = p
+            except Exception as quote_e:
+                logging.error(f"Lỗi lấy giá {sym}: {quote_e}")
+                
+            buy_val_vnd = qty * buy_price * 1000
+            curr_val_vnd = qty * curr_price * 1000
+            pnl_vnd = curr_val_vnd - buy_val_vnd
+            pnl_pct = ((curr_price - buy_price) / buy_price) * 100
+            
+            total_buy_val += buy_val_vnd
+            total_curr_val += curr_val_vnd
+            
+            pos_info = f"📌 **{sym}**\n" \
+                       f"  - Số lượng: {qty:,} cp\n" \
+                       f"  - Giá mua: {buy_price:.2f} | Hiện tại: {curr_price:.2f}\n" \
+                       f"  - Giá trị mua: {buy_val_vnd:,.0f}đ\n" \
+                       f"  - Định giá: {curr_val_vnd:,.0f}đ\n" \
+                       f"  - Lãi/Lỗ: *{pnl_vnd:+,.0f}đ* ({pnl_pct:+.2f}%)"
+            pos_list.append(pos_info)
+            time.sleep(1.0)
+            
+        net_worth = cash + total_curr_val
+        total_pnl_vnd = total_curr_val - total_buy_val
+        total_pnl_pct = (total_pnl_vnd / total_buy_val * 100) if total_buy_val > 0 else 0.0
+        
+        msg = f"💰 *BÁO CÁO SỐ DƯ & DANH MỤC VÍ ẢO* 💰\n" \
+              f"───────────────────\n" \
+              f"- 💵 *Tiền mặt:* **{cash:,.0f}đ**\n" \
+              f"- 📈 *Tổng tài sản (Net Worth):* **{net_worth:,.0f}đ**\n" \
+              f"- 📊 *Hiệu suất danh mục:* **{total_pnl_vnd:+,.0f}đ** ({total_pnl_pct:+.2f}%)\n" \
+              f"───────────────────\n" \
+              f"📂 *Chi tiết các vị thế đang nắm giữ:*\n\n" + "\n\n".join(pos_list)
+              
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": msg,
+            "parse_mode": "Markdown"
+        }, timeout=10)
+        
+    except Exception as e:
+        logging.error(f"[BOT] Lỗi khi xử lý số dư: {e}")
+        import requests
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": f"❌ *Lỗi hệ thống khi tải số dư:* {str(e)}",
+            "parse_mode": "Markdown"
+        }, timeout=10)
+
+def handle_history_request(token: str, chat_id: int):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        import requests
+        from src.paper_trader import load_portfolio
+        portfolio = load_portfolio()
+        history = portfolio.get("history", [])
+        
+        if not history:
+            requests.post(url, json={
+                "chat_id": chat_id,
+                "text": "📜 *LỊCH SỬ GIAO DỊCH VÍ ẢO* 📜\n───────────────────\nChưa ghi nhận giao dịch đóng nào trong lịch sử.",
+                "parse_mode": "Markdown"
+            }, timeout=10)
+            return
+            
+        recent_history = history[-10:]
+        recent_history.reverse()
+        
+        hist_list = []
+        for i, h in enumerate(recent_history, 1):
+            pnl_sign = "+" if h["pnl_amount"] > 0 else ""
+            pnl_percent_str = f"{pnl_sign}{h['pnl_percent']:.2f}%"
+            pnl_amount_str = f"{pnl_sign}{h['pnl_amount']:,.0f}đ"
+            
+            entry = f"{i}. **{h['symbol']}** ({h['reason']})\n" \
+                    f"  - Mua: {h['buy_price']:.2f} ({h['buy_date'].split()[0]})\n" \
+                    f"  - Bán: {h['sell_price']:.2f} ({h['sell_date'].split()[0]})\n" \
+                    f"  - SL: {h['quantity']:,} cp\n" \
+                    f"  - Lãi/Lỗ: *{pnl_amount_str}* ({pnl_percent_str})"
+            hist_list.append(entry)
+            
+        msg = f"📜 *LỊCH SỬ GIAO DỊCH VÍ ẢO* 📜\n" \
+              f"_(Hiển thị tối đa 10 giao dịch gần nhất, mới nhất xếp trước)_\n" \
+              f"───────────────────\n\n" + "\n\n".join(hist_list)
+              
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": msg,
+            "parse_mode": "Markdown"
+        }, timeout=10)
+    except Exception as e:
+        logging.error(f"[BOT] Lỗi khi truy vấn lịch sử giao dịch: {e}")
+        import requests
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": f"❌ *Lỗi hệ thống khi tải lịch sử:* {str(e)}",
+            "parse_mode": "Markdown"
+        }, timeout=10)
+
+def handle_watchlist_request(token: str, chat_id: int):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        import requests
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": "⏳ *Đang tải bảng giá danh mục theo dõi...*",
+            "parse_mode": "Markdown"
+        }, timeout=10)
+    except Exception as e:
+        logging.error(f"[BOT] Lỗi gửi thông báo danh mục theo dõi: {e}")
+        
+    try:
+        import requests
+        from config import DEFAULT_WATCHLIST
+        from vnstock import Market
+        m = Market()
+        
+        watch_list = []
+        for sym in DEFAULT_WATCHLIST:
+            try:
+                df_quote = m.equity(sym).quote()
+                if not df_quote.empty:
+                    p = df_quote.iloc[0]["close_price"]
+                    chg = df_quote.iloc[0]["percent_change"]
+                    if p > 0:
+                        if p > 1000:
+                            p /= 1000.0
+                        watch_list.append(f"📌 **{sym}**: Giá **{p:.2f}** ({chg:+.2f}%)")
+                    else:
+                        watch_list.append(f"📌 **{sym}**: Giá --")
+                else:
+                    watch_list.append(f"📌 **{sym}**: Không có dữ liệu")
+            except Exception as e:
+                logging.error(f"Lỗi lấy giá cho {sym} trong watchlist: {e}")
+                watch_list.append(f"📌 **{sym}**: Lỗi tải giá")
+            time.sleep(1.0)
+            
+        msg = f"📋 *DANH MỤC CỔ PHIẾU THEO DÕI* 📋\n" \
+              f"───────────────────\n\n" + "\n".join(watch_list) + \
+              f"\n\n💡 _Dùng tính năng '🔮 Xem dự báo' để phân tích kỹ thuật và quét tín hiệu Mua/Bán chi tiết cho danh mục này._"
+              
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": msg,
+            "parse_mode": "Markdown"
+        }, timeout=10)
+    except Exception as e:
+        logging.error(f"[BOT] Lỗi khi tải danh mục theo dõi: {e}")
+        import requests
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": f"❌ *Lỗi hệ thống khi tải danh mục theo dõi:* {str(e)}",
+            "parse_mode": "Markdown"
+        }, timeout=10)
+
+def handle_help_request(token: str, chat_id: int):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    help_text = f"❓ *HƯỚNG DẪN SỬ DỤNG VN-WAVETRADER BOT* ❓\n" \
+                f"───────────────────\n" \
+                f"Hệ thống cung cấp các nút tương tác nhanh ở bàn phím điện thoại của bạn:\n\n" \
+                f"🔮 *Xem dự báo:* Phân tích độ rộng thị trường VN30, tính toán các tín hiệu Mua/Bán ngắn hạn cho watchlist của bạn, chạy thuật toán tối ưu hóa tỷ trọng vốn HRP, và gửi nhận định chuyên sâu từ AI Gemini.\n\n" \
+                f"💰 *Xem số dư:* Xem tiền mặt còn lại trong tài khoản ví ảo, thống kê tất cả các vị thế đang nắm giữ, định giá tài sản thời gian thực và tổng lợi nhuận ngắn hạn.\n\n" \
+                f"📜 *Lịch sử lệnh:* Xem lại danh sách 10 giao dịch đã đóng gần nhất trong ví ảo cùng hiệu suất và lý do đóng vị thế (Cắt lỗ động ATR, Chốt lời TP1/TP2, Bán tay...).\n\n" \
+                f"📋 *Danh mục:* Xem danh sách cổ phiếu đang theo dõi cùng với giá khớp hiện tại.\n\n" \
+                f"💡 *Mẹo:* Khi hệ thống gửi tín hiệu MUA, bạn có thể click vào nút **`💼 Xác nhận Mua & Giám sát [Mã]`** đính kèm dưới tin nhắn. Hệ thống sẽ tự động thêm vị thế ảo vào ví và bắt đầu chạy giám sát cắt lỗ chốt lời thời gian thực cho bạn trong phiên giao dịch!"
+                
+    try:
+        import requests
+        requests.post(url, json={
+            "chat_id": chat_id,
+            "text": help_text,
+            "parse_mode": "Markdown"
+        }, timeout=10)
+    except Exception as e:
+        logging.error(f"[BOT] Lỗi gửi hướng dẫn: {e}")
+
+def register_telegram_commands(token: str):
+    url = f"https://api.telegram.org/bot{token}/setMyCommands"
+    commands = [
+        {"command": "menu", "description": "Mở bàn phím menu tương tác nhanh"},
+        {"command": "forecast", "description": "Xem dự báo & phân tích thị trường EOD"},
+        {"command": "balance", "description": "Xem số dư & danh mục ví ảo"},
+        {"command": "history", "description": "Xem lịch sử lệnh ví ảo"},
+        {"command": "watchlist", "description": "Xem danh mục cổ phiếu theo dõi"},
+        {"command": "help", "description": "Hướng dẫn sử dụng"}
+    ]
+    try:
+        import requests
+        r = requests.post(url, json={"commands": commands}, timeout=10)
+        if r.status_code == 200 and r.json().get("ok"):
+            logging.info("[BOT] Đã đăng ký danh sách lệnh Command Menu với Telegram thành công.")
+        else:
+            logging.error(f"[BOT] Lỗi đăng ký Command Menu: {r.text}")
+    except Exception as e:
+        logging.error(f"[BOT] Không thể kết nối đăng ký Command Menu: {e}")
+
 def telegram_polling_loop():
     import requests
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -354,6 +654,8 @@ def telegram_polling_loop():
         return
         
     logging.info("[BOT] Khởi động luồng lắng nghe tương tác Telegram Bot thành công.")
+    register_telegram_commands(token)
+    
     offset = 0
     from src.paper_trader import buy_stock
     
@@ -367,19 +669,51 @@ def telegram_polling_loop():
                 
             res = response.json()
             if not res.get("ok"):
+                logging.warning(f"[BOT] Telegram API trả về lỗi: {res.get('description')}")
                 time.sleep(5)
                 continue
                 
             for update in res.get("result", []):
                 offset = update["update_id"] + 1
                 
-                # Xử lý callback từ nút bấm
-                if "callback_query" in update:
+                # 1. Xử lý tin nhắn văn bản (commands & menu)
+                if "message" in update:
+                    msg = update["message"]
+                    chat_id = msg["chat"]["id"]
+                    text = msg.get("text", "").strip()
+                    
+                    # Xác thực chat ID từ .env
+                    allowed_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                    if allowed_chat_id and str(chat_id) != str(allowed_chat_id):
+                        logging.warning(f"[BOT] Nhận tin nhắn từ Chat ID lạ: {chat_id}. Bỏ qua để bảo mật.")
+                        continue
+                        
+                    if text in ["/start", "/menu"] or text.lower() == "menu":
+                        send_telegram_menu(token, chat_id)
+                    elif text in ["🔮 Xem dự báo", "/forecast"]:
+                        threading.Thread(target=handle_forecast_request, args=(token, chat_id), daemon=True).start()
+                    elif text in ["💰 Xem số dư", "/balance"]:
+                        threading.Thread(target=handle_balance_request, args=(token, chat_id), daemon=True).start()
+                    elif text in ["📜 Lịch sử lệnh", "/history"]:
+                        threading.Thread(target=handle_history_request, args=(token, chat_id), daemon=True).start()
+                    elif text in ["📋 Danh mục", "/watchlist"]:
+                        threading.Thread(target=handle_watchlist_request, args=(token, chat_id), daemon=True).start()
+                    elif text in ["❓ Trợ giúp", "/help"]:
+                        threading.Thread(target=handle_help_request, args=(token, chat_id), daemon=True).start()
+                        
+                # 2. Xử lý callback từ nút bấm
+                elif "callback_query" in update:
                     cb = update["callback_query"]
                     cb_data = cb.get("data", "")
                     cb_id = cb["id"]
                     chat_id = cb["message"]["chat"]["id"]
                     
+                    # Xác thực chat ID
+                    allowed_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                    if allowed_chat_id and str(chat_id) != str(allowed_chat_id):
+                        logging.warning(f"[BOT] Nhận callback từ Chat ID lạ: {chat_id}. Bỏ qua để bảo mật.")
+                        continue
+                        
                     # Cấu trúc callback_data: buy_{symbol}_{price}
                     if cb_data.startswith("buy_"):
                         parts = cb_data.split("_")
@@ -434,54 +768,13 @@ def telegram_polling_loop():
             logging.error(f"[BOT] Lỗi trong vòng lặp lắng nghe tương tác Telegram: {e}")
             time.sleep(5)
 
-def daily_report_scheduler_loop():
-    """
-    Luồng chạy độc lập kiểm tra và tự động gửi báo cáo hàng ngày lúc 15:15 (GMT+7) từ Thứ 2 - Thứ 6.
-    """
-    logging.info("[SCHEDULER] Khởi động luồng hẹn giờ báo cáo hàng ngày thành công.")
-    from datetime import datetime, timedelta, timezone
-    
-    def get_vietnam_now():
-        return datetime.now(timezone(timedelta(hours=7)))
-        
-    last_sent_date = ""
-    
-    while True:
-        try:
-            vn_now = get_vietnam_now()
-            # Chỉ chạy từ Thứ 2 đến Thứ 6 (ngày giao dịch)
-            if vn_now.weekday() < 5:
-                today_str = vn_now.strftime("%Y-%m-%d")
-                # Hẹn giờ từ lúc 15:15 đến hết khung giờ 15:00-16:00
-                if (vn_now.hour == 15 and vn_now.minute >= 15) and last_sent_date != today_str:
-                    logging.info("[SCHEDULER] Đến giờ tự động gửi báo cáo hàng ngày (15:15)...")
-                    from src.notifier import send_daily_report_to_telegram
-                    success = send_daily_report_to_telegram()
-                    if success:
-                        logging.info("[SCHEDULER] Tự động gửi báo cáo EOD thành công.")
-                        last_sent_date = today_str
-                    else:
-                        logging.error("[SCHEDULER] Tự động gửi báo cáo EOD thất bại. Sẽ thử lại sau 60 giây.")
-                        time.sleep(60)
-                        continue
-            
-            # Quét mỗi 30 giây để kiểm tra giờ
-            time.sleep(30)
-        except Exception as e:
-            logging.error(f"[SCHEDULER] Lỗi trong luồng hẹn giờ báo cáo: {e}")
-            time.sleep(60)
-
 if __name__ == "__main__":
     try:
         # 1. Khởi chạy luồng Telegram Bot Polling lắng nghe tương tác
         bot_thread = threading.Thread(target=telegram_polling_loop, daemon=True)
         bot_thread.start()
         
-        # 2. Khởi chạy luồng Scheduler tự động gửi báo cáo cuối ngày EOD lúc 15:15
-        scheduler_thread = threading.Thread(target=daily_report_scheduler_loop, daemon=True)
-        scheduler_thread.start()
-        
-        # 3. Chạy luồng giám sát chính
+        # 2. Chạy luồng giám sát chính
         run_portfolio_monitor()
     except KeyboardInterrupt:
         logging.info("Tiến trình giám sát danh mục đã bị dừng bởi người dùng.")
