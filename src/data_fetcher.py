@@ -2,11 +2,16 @@ import pandas as pd
 import logging
 import socket
 import threading
+import time
 socket.setdefaulttimeout(30) # Ngăn chặn nghẽn socket mạng vô hạn khi gọi API (tăng lên 30s tránh kết nối chậm)
 from vnstock import Market, Reference, Fundamental
 
 # Cấu hình logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Cache dữ liệu OHLCV để tránh rate limit
+_ohlcv_cache = {}
+CACHE_DURATION_SECONDS = 1800  # Lưu cache trong 30 phút
 
 def _get_stock_ohlcv_internal(symbol: str, length: int = 365, interval: str = "1D") -> pd.DataFrame:
     """
@@ -69,8 +74,18 @@ def _get_stock_ohlcv_internal(symbol: str, length: int = 365, interval: str = "1
 
 def get_stock_ohlcv(symbol: str, length: int = 365, interval: str = "1D") -> pd.DataFrame:
     """
-    Tải dữ liệu lịch sử giá OHLCV của cổ phiếu bằng vnstock (có bảo vệ chống treo bằng Thread).
+    Tải dữ liệu lịch sử giá OHLCV của cổ phiếu bằng vnstock (có cache và bảo vệ chống treo bằng Thread).
     """
+    cache_key = (symbol, length, interval)
+    current_time = time.time()
+    
+    # Kiểm tra cache trước để tránh rate limit
+    if cache_key in _ohlcv_cache:
+        cached_time, cached_df = _ohlcv_cache[cache_key]
+        if current_time - cached_time < CACHE_DURATION_SECONDS:
+            logging.info(f"🔄 [CACHE HIT] Sử dụng dữ liệu cache của {symbol} (khung {interval})")
+            return cached_df.copy()
+            
     result = []
     exception_container = []
     
@@ -94,8 +109,10 @@ def get_stock_ohlcv(symbol: str, length: int = 365, interval: str = "1D") -> pd.
         logging.error(f"Lỗi khi thực thi tải dữ liệu {symbol}: {exception_container[0]}")
         return pd.DataFrame()
         
-    if result:
-        return result[0]
+    if result and not result[0].empty:
+        # Lưu vào cache nếu thành công
+        _ohlcv_cache[cache_key] = (current_time, result[0])
+        return result[0].copy()
         
     return pd.DataFrame()
 

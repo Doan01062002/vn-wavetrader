@@ -81,35 +81,31 @@ def send_daily_report_to_telegram(chat_id: str = None) -> bool:
     """
     logging.info("Bắt đầu khởi chạy Báo cáo lướt sóng tự động...")
     
-    # 1. Tính toán độ rộng thị trường (Market Breadth) của nhóm VN30
-    import time
-    logging.info("Đang tính toán độ rộng thị trường VN30...")
-    breadth = 50.0
-    try:
-        vn30_symbols = get_vn30_symbols()[:15] # Lấy top 15 mã VN30 lớn nhất để quét nhanh tránh rate limit
-        uptrend_count = 0
-        scanned_count = 0
-        for vn30_sym in vn30_symbols:
-            df_vn30 = get_stock_ohlcv(vn30_sym, length=100)
-            if not df_vn30.empty:
-                from src.indicators import calculate_indicators
-                df_vn30 = calculate_indicators(df_vn30, symbol=vn30_sym)
-                if not df_vn30.empty and 'ema_short' in df_vn30.columns:
-                    if df_vn30['close'].iloc[-1] > df_vn30['ema_short'].iloc[-1]:
-                        uptrend_count += 1
-                    scanned_count += 1
-            time.sleep(1.0)
-        if scanned_count > 0:
-            breadth = (uptrend_count / scanned_count) * 100
-    except Exception as e:
-        logging.error(f"Lỗi tính độ rộng thị trường: {e}")
-        
-    market_warning = ""
+    # 1. Kiểm tra xu hướng thị trường chung qua chỉ số VN30 (chỉ dùng 1 request thay vì 15)
+    logging.info("Đang kiểm tra xu hướng thị trường chung qua chỉ số VN30...")
     is_market_risky = False
-    if breadth < 40.0:
-        is_market_risky = True
+    market_warning = ""
+    breadth = 100.0  # Mặc định tốt
+    try:
+        df_vn30_index = get_stock_ohlcv("VN30", length=100)
+        if not df_vn30_index.empty:
+            from src.indicators import calculate_indicators
+            df_vn30_index = calculate_indicators(df_vn30_index, symbol="VN30")
+            if not df_vn30_index.empty and 'ema_short' in df_vn30_index.columns:
+                close_price = df_vn30_index['close'].iloc[-1]
+                ema20 = df_vn30_index['ema_short'].iloc[-1]
+                logging.info(f"Chỉ số VN30 đóng cửa ở {close_price:.2f} (EMA20: {ema20:.2f})")
+                if close_price < ema20:
+                    is_market_risky = True
+                    breadth = 30.0  # Đặt độ rộng 30% để kích hoạt chế độ phòng vệ
+        else:
+            logging.warning("Không tải được dữ liệu chỉ số VN30, bỏ qua kiểm tra rủi ro thị trường.")
+    except Exception as e:
+        logging.error(f"Lỗi khi kiểm tra xu hướng chỉ số VN30: {e}")
+        
+    if is_market_risky:
         market_warning = f"⚠️ *[BẢO VỆ DÒNG VỐN - RỦI RO THỊ TRƯỜNG CHUNG]* ⚠️\n" \
-                         f"Độ rộng thị trường VN30 hiện tại ở mức rất yếu: **{breadth:.1f}%** (<40% mã nằm trên EMA20). " \
+                         f"Chỉ số VN30 hiện tại đang nằm dưới đường xu hướng EMA20. " \
                          f"Hệ thống đã kích hoạt chế độ phòng vệ rủi ro vĩ mô, **vô hiệu hóa các tín hiệu Mua mới** để bảo vệ tài sản của bạn!\n\n"
                          
     # 2. Tải dữ liệu và quét tín hiệu
