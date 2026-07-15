@@ -370,8 +370,28 @@ def send_telegram_menu(token: str, chat_id: int):
     except Exception as e:
         logging.error(f"[BOT] Lỗi gửi menu: {e}")
 
+# Biến cờ và Lock để chống spam lệnh dự báo đồng thời
+is_forecast_running = False
+forecast_lock = threading.Lock()
+
 def handle_forecast_request(token: str, chat_id: int):
+    global is_forecast_running
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    
+    with forecast_lock:
+        if is_forecast_running:
+            try:
+                import requests
+                requests.post(url, json={
+                    "chat_id": chat_id,
+                    "text": "⚠️ *Hệ thống đang thực hiện một phân tích khác.*\n\nVui lòng không gửi lệnh liên tục và đợi khoảng 1-2 phút cho đến khi có kết quả.",
+                    "parse_mode": "Markdown"
+                }, timeout=10)
+            except Exception as e:
+                logging.error(f"[BOT] Lỗi gửi tin nhắn cảnh báo spam: {e}")
+            return
+        is_forecast_running = True
+        
     try:
         import requests
         requests.post(url, json={
@@ -379,14 +399,10 @@ def handle_forecast_request(token: str, chat_id: int):
             "text": "⏳ *Hệ thống bắt đầu quét dữ liệu & phân tích thị trường VN30...*\n\n_Vui lòng đợi khoảng 30-60 giây để chạy tính năng chỉ báo kỹ thuật, tối ưu danh mục HRP và nhận định chuyên sâu từ AI Gemini..._",
             "parse_mode": "Markdown"
         }, timeout=10)
-    except Exception as e:
-        logging.error(f"[BOT] Lỗi gửi thông báo bắt đầu dự báo: {e}")
         
-    try:
         from src.notifier import send_daily_report_to_telegram
         success = send_daily_report_to_telegram(chat_id=str(chat_id))
         if not success:
-            import requests
             requests.post(url, json={
                 "chat_id": chat_id,
                 "text": "❌ *Lỗi:* Không thể chạy phân tích dữ liệu hoặc gửi báo cáo. Vui lòng kiểm tra log trên server.",
@@ -394,12 +410,18 @@ def handle_forecast_request(token: str, chat_id: int):
             }, timeout=10)
     except Exception as e:
         logging.error(f"[BOT] Lỗi khi chạy dự báo: {e}")
-        import requests
-        requests.post(url, json={
-            "chat_id": chat_id,
-            "text": f"❌ *Lỗi hệ thống khi phân tích:* {str(e)}",
-            "parse_mode": "Markdown"
-        }, timeout=10)
+        try:
+            import requests
+            requests.post(url, json={
+                "chat_id": chat_id,
+                "text": f"❌ *Lỗi hệ thống khi phân tích:* {str(e)}",
+                "parse_mode": "Markdown"
+            }, timeout=10)
+        except Exception:
+            pass
+    finally:
+        with forecast_lock:
+            is_forecast_running = False
 
 def handle_balance_request(token: str, chat_id: int):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -566,28 +588,30 @@ def handle_watchlist_request(token: str, chat_id: int):
     try:
         import requests
         from config import DEFAULT_WATCHLIST
-        from vnstock import Market
-        m = Market()
+        from src.data_fetcher import get_stock_ohlcv
         
         watch_list = []
         for sym in DEFAULT_WATCHLIST:
             try:
-                df_quote = m.equity(sym).quote()
-                if not df_quote.empty:
-                    p = df_quote.iloc[0]["close_price"]
-                    chg = df_quote.iloc[0]["percent_change"]
-                    if p > 0:
-                        if p > 1000:
-                            p /= 1000.0
-                        watch_list.append(f"📌 **{sym}**: Giá **{p:.2f}** ({chg:+.2f}%)")
-                    else:
-                        watch_list.append(f"📌 **{sym}**: Giá --")
+                # Sử dụng get_stock_ohlcv(length=120) để tận dụng tối đa cache RAM 30 phút từ bước dự báo
+                df = get_stock_ohlcv(sym, length=120)
+                if not df.empty and len(df) >= 2:
+                    p = df['close'].iloc[-1]
+                    prev_p = df['close'].iloc[-2]
+                    chg = ((p - prev_p) / prev_p) * 100
+                    
+                    # Quy đổi giá đơn vị nghìn đồng cho thống nhất
+                    if p > 1000:
+                        p /= 1000.0
+                    
+                    watch_list.append(f"📌 **{sym}**: Giá **{p:.2f}** ({chg:+.2f}%)")
                 else:
                     watch_list.append(f"📌 **{sym}**: Không có dữ liệu")
             except Exception as e:
                 logging.error(f"Lỗi lấy giá cho {sym} trong watchlist: {e}")
                 watch_list.append(f"📌 **{sym}**: Lỗi tải giá")
-            time.sleep(1.0)
+            # Nghỉ ngắn vì hầu hết là cache hit
+            time.sleep(0.2)
             
         msg = f"📋 *DANH MỤC CỔ PHIẾU THEO DÕI* 📋\n" \
               f"───────────────────\n\n" + "\n".join(watch_list) + \
