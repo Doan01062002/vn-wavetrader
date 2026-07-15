@@ -1,6 +1,7 @@
 import os
 import requests
 import logging
+import time
 import pandas as pd
 from dotenv import load_dotenv
 from config import DEFAULT_WATCHLIST
