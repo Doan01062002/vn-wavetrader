@@ -1,15 +1,16 @@
 import pandas as pd
 import logging
 import socket
+import threading
 socket.setdefaulttimeout(30) # Ngăn chặn nghẽn socket mạng vô hạn khi gọi API (tăng lên 30s tránh kết nối chậm)
 from vnstock import Market, Reference, Fundamental
 
 # Cấu hình logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def get_stock_ohlcv(symbol: str, length: int = 365, interval: str = "1D") -> pd.DataFrame:
+def _get_stock_ohlcv_internal(symbol: str, length: int = 365, interval: str = "1D") -> pd.DataFrame:
     """
-    Tải dữ liệu lịch sử giá OHLCV của cổ phiếu bằng vnstock.
+    Hàm nội bộ thực hiện tải dữ liệu lịch sử giá OHLCV của cổ phiếu bằng vnstock.
     """
     try:
         logging.info(f"Đang tải dữ liệu lịch sử {symbol} ({length} ngày, interval={interval})...")
@@ -66,6 +67,38 @@ def get_stock_ohlcv(symbol: str, length: int = 365, interval: str = "1D") -> pd.
             logging.error(f"Fallback thất bại cho {symbol}: {fallback_e}")
             return pd.DataFrame()
 
+def get_stock_ohlcv(symbol: str, length: int = 365, interval: str = "1D") -> pd.DataFrame:
+    """
+    Tải dữ liệu lịch sử giá OHLCV của cổ phiếu bằng vnstock (có bảo vệ chống treo bằng Thread).
+    """
+    result = []
+    exception_container = []
+    
+    def target():
+        try:
+            df = _get_stock_ohlcv_internal(symbol, length, interval)
+            result.append(df)
+        except Exception as e:
+            exception_container.append(e)
+            
+    thread = threading.Thread(target=target)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout=25.0) # Giới hạn cứng 25 giây cho mỗi lần gọi tải dữ liệu
+    
+    if thread.is_alive():
+        logging.warning(f"⚠️ Gọi API tải dữ liệu {symbol} bị quá thời gian chờ (timeout 25s). Bỏ qua để tránh treo.")
+        return pd.DataFrame()
+        
+    if exception_container:
+        logging.error(f"Lỗi khi thực thi tải dữ liệu {symbol}: {exception_container[0]}")
+        return pd.DataFrame()
+        
+    if result:
+        return result[0]
+        
+    return pd.DataFrame()
+
 def get_company_info(symbol: str) -> dict:
     """
     Lấy thông tin cơ bản và giới thiệu về doanh nghiệp.
@@ -93,10 +126,7 @@ def get_company_ratios(symbol: str) -> pd.DataFrame:
         logging.error(f"Lỗi lấy chỉ số tài chính {symbol}: {e}")
         return pd.DataFrame()
 
-def get_vn30_symbols() -> list:
-    """
-    Lấy danh sách các mã cổ phiếu trong nhóm VN30.
-    """
+def _get_vn30_symbols_internal() -> list:
     try:
         ref = Reference()
         # Thử lấy danh sách VN30 (vnstock v4+ trả về pandas.Series)
@@ -110,10 +140,41 @@ def get_vn30_symbols() -> list:
                 return list(res)
     except Exception as e:
         logging.error(f"Lỗi lấy danh sách VN30 từ Reference: {e}")
+    return []
+
+def get_vn30_symbols() -> list:
+    """
+    Lấy danh sách các mã cổ phiếu trong nhóm VN30 (có bảo vệ chống treo bằng Thread).
+    """
+    result = []
+    
+    def target():
+        res = _get_vn30_symbols_internal()
+        result.append(res)
+            
+    thread = threading.Thread(target=target)
+    thread.daemon = True
+    thread.start()
+    thread.join(timeout=15.0) # Giới hạn cứng 15 giây
+    
+    if thread.is_alive():
+        logging.warning("⚠️ Lấy danh sách VN30 bị quá thời gian chờ (timeout 15s). Sử dụng danh sách cứng dự phòng.")
+        # Danh sách VN30 cứng làm dự phòng để đảm bảo hệ thống luôn hoạt động
+        return [
+            "ACB", "BCG", "BID", "BVH", "CTG", "FPT", "GAS", "GVR", "HDB", "HPG", 
+            "MBB", "MSN", "MWG", "PLX", "POW", "SAB", "SHB", "SSB", "SSI", "STB", 
+            "TCB", "TPB", "VCB", "VHM", "VIB", "VIC", "VJC", "VNM", "VPB", "VRE"
+        ]
         
-    # Trả về danh sách tĩnh nếu có lỗi
-    from config import DEFAULT_WATCHLIST
-    return DEFAULT_WATCHLIST
+    if result and result[0]:
+        return result[0]
+        
+    # Trả về danh sách tĩnh dự phòng nếu có lỗi
+    return [
+        "ACB", "BCG", "BID", "BVH", "CTG", "FPT", "GAS", "GVR", "HDB", "HPG", 
+        "MBB", "MSN", "MWG", "PLX", "POW", "SAB", "SHB", "SSB", "SSI", "STB", 
+        "TCB", "TPB", "VCB", "VHM", "VIB", "VIC", "VJC", "VNM", "VPB", "VRE"
+    ]
 
 def get_stock_news(symbol: str, limit: int = 5) -> list:
     """
