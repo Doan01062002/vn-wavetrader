@@ -1,5 +1,7 @@
 import pandas as pd
 import logging
+import socket
+socket.setdefaulttimeout(15) # Ngăn chặn nghẽn socket mạng vô hạn khi gọi API
 from vnstock import Market, Reference, Fundamental
 
 # Cấu hình logging

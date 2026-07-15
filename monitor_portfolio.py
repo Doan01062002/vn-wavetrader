@@ -8,6 +8,8 @@ import threading
 from vnstock import Market
 
 # Add project root to path
+import socket
+socket.setdefaulttimeout(15) # Ngăn chặn nghẽn socket mạng vô hạn khi gọi API
 sys.path.append(os.getcwd())
 
 from config import MY_PORTFOLIO, INDICATOR_PARAMS
