@@ -1,11 +1,11 @@
-﻿import pandas as pd
+import pandas as pd
 import numpy as np
 import logging
 from pypfopt import expected_returns, risk_models
 from pypfopt.efficient_frontier import EfficientFrontier
 from pypfopt.hierarchical_portfolio import HRPOpt
 
-logger = logger.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 def optimize_portfolio(prices_df: pd.DataFrame, target_symbols: list, method: str = 'hrp') -> tuple:
     """

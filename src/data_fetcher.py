@@ -6,7 +6,7 @@ import time
 socket.setdefaulttimeout(30) # NgÄƒn cháº·n ngháº½n socket máº¡ng vĂ´ háº¡n khi gá»i API (tÄƒng lĂªn 30s trĂ¡nh káº¿t ná»‘i cháº­m)
 from vnstock import Market, Reference, Fundamental
 
-logger = logger.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # Cache dá»¯ liá»‡u OHLCV Ä‘á»ƒ trĂ¡nh rate limit
 _ohlcv_cache = {}

@@ -14,7 +14,7 @@ from src.llm_analyzer import analyze_stock_with_ai
 from src.rate_limiter import vnstock_limiter
 
 
-logger = logger.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # Phân nhóm ngành để lọc tín hiệu đồng thuận sóng ngành (Sector Strength Filter)
 SECTORS = {
@@ -128,7 +128,7 @@ def _calculate_confidence(signals: dict, volume_confirmed: bool, weekly_ok: bool
     Tính mức độ tin cậy (confidence) cho tín hiệu MUA dựa trên các yếu tố xác nhận.
     Trả về: 'CAO', 'TRUNG BÌNH', hoặc 'THẤP'
     """
-    if signals["status"] not in ["BUY", "STRONG BUY"]:
+    if signals.get("status") not in ["BUY", "STRONG BUY"]:
         return "N/A"
 
     confirmations = sum([volume_confirmed, weekly_ok, sector_ok])
