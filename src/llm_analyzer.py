@@ -1,14 +1,86 @@
+"""
+Module phân tích AI sử dụng Groq SDK chính thức.
+
+Cải tiến v2:
+- Chuyển từ raw HTTP requests sang Groq SDK chính thức
+- Retry tự động với exponential backoff
+- Rate limiting tập trung qua groq_limiter
+- Fallback graceful khi không có API key
+"""
 import os
 import logging
 import pandas as pd
 from dotenv import load_dotenv
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+from src.rate_limiter import groq_limiter, api_retrier
+
+logger = logging.getLogger(__name__)
 
 # Load biến môi trường từ .env
 load_dotenv()
 
-class GroqClientWrapper:
+# Groq client singleton (lazy init)
+_groq_client = None
+
+
+def init_gemini():
+    """
+    Khởi tạo Groq API Client chính thức.
+    Tên hàm giữ nguyên để tương thích ngược với các module khác.
+    """
+    global _groq_client
+    if _groq_client is not None:
+        return _groq_client
+
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        logger.warning("GROQ_API_KEY chưa được thiết lập trong file .env")
+        return None
+
+    try:
+        from groq import Groq
+        _groq_client = _GroqWrapper(Groq(api_key=api_key))
+        logger.info("Groq SDK client đã khởi tạo thành công.")
+        return _groq_client
+    except ImportError:
+        logger.warning("Thư viện 'groq' chưa được cài đặt. Chạy: pip install groq")
+        # Fallback về raw HTTP client cũ
+        return _GroqHttpWrapper(api_key)
+    except Exception as e:
+        logger.error(f"Lỗi khởi tạo Groq SDK: {e}")
+        return None
+
+
+class _GroqWrapper:
+    """Wrapper cho Groq SDK chính thức — thêm rate limit và retry."""
+
+    def __init__(self, client, model_name: str = "llama-3.3-70b-versatile"):
+        self._client = client
+        self.model_name = model_name
+
+    @groq_limiter.throttle
+    @api_retrier.retry
+    def generate_content(self, prompt: str) -> object:
+        response = self._client.chat.completions.create(
+            model=self.model_name,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=4096
+        )
+
+        class ResponseMock:
+            def __init__(self, text: str):
+                self.text = text
+
+        return ResponseMock(response.choices[0].message.content)
+
+
+class _GroqHttpWrapper:
+    """
+    Fallback: Gọi Groq qua raw HTTP nếu SDK chưa được cài.
+    Giữ lại để không bị lỗi khi groq package chưa install.
+    """
+
     def __init__(self, api_key: str, model_name: str = "llama-3.3-70b-versatile"):
         self.api_key = api_key
         self.model_name = model_name
@@ -18,53 +90,47 @@ class GroqClientWrapper:
             "Content-Type": "application/json"
         }
 
+    @groq_limiter.throttle
     def generate_content(self, prompt: str) -> object:
-        import requests
+        import requests as _requests
         payload = {
             "model": self.model_name,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1
         }
-        try:
-            response = requests.post(self.url, json=payload, headers=self.headers, timeout=30)
-            if response.status_code == 200:
-                result = response.json()
-                text_content = result["choices"][0]["message"]["content"]
-                
-                # Giả lập đối tượng phản hồi của Gemini để tương thích ngược
-                class ResponseMock:
-                    def __init__(self, text):
-                        self.text = text
-                return ResponseMock(text_content)
-            else:
-                logging.error(f"Lỗi Groq API ({response.status_code}): {response.text}")
-                raise Exception(f"Groq API error ({response.status_code}): {response.text}")
-        except Exception as e:
-            logging.error(f"Lỗi gọi Groq API: {e}")
-            raise e
+        response = _requests.post(self.url, json=payload, headers=self.headers, timeout=30)
+        if response.status_code == 200:
+            text_content = response.json()["choices"][0]["message"]["content"]
 
-def init_gemini():
-    """
-    Khởi tạo Groq API Client dưới dạng Wrapper để tương thích ngược.
-    """
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        logging.warning("GROQ_API_KEY chưa được thiết lập trong file .env")
-        return None
-    return GroqClientWrapper(api_key, model_name="llama-3.3-70b-versatile")
+            class ResponseMock:
+                def __init__(self, text: str):
+                    self.text = text
 
-def analyze_stock_with_ai(symbol: str, price_data_summary: dict, technical_signals: dict, financial_ratios: dict = None, news_list: list = None, canslim_data: dict = None) -> str:
+            return ResponseMock(text_content)
+        elif response.status_code == 429:
+            raise Exception(f"Groq rate limit (429): {response.text}")
+        else:
+            raise Exception(f"Groq API error ({response.status_code}): {response.text}")
+
+
+def analyze_stock_with_ai(
+    symbol: str,
+    price_data_summary: dict,
+    technical_signals: dict,
+    financial_ratios: pd.DataFrame = None,
+    news_list: list = None,
+    canslim_data: dict = None
+) -> str:
     """
-    Sử dụng Gemini API để sinh báo cáo phân tích cổ phiếu lướt sóng chuyên sâu.
+    Sử dụng Groq API để sinh báo cáo phân tích cổ phiếu lướt sóng chuyên sâu.
     """
     model = init_gemini()
-    
+
     # Chuẩn bị thông tin đầu vào cho Prompt
     signals_str = "\n".join([f"- {d}" for d in technical_signals.get("details", [])])
-    
+
     fin_str = ""
     if financial_ratios is not None and not financial_ratios.empty:
-        # Lấy dòng mới nhất của các chỉ số tài chính (nếu có)
         try:
             latest_fin = financial_ratios.iloc[0].to_dict() if len(financial_ratios) > 0 else {}
             fin_str = "\n".join([f"- {k}: {v}" for k, v in latest_fin.items() if pd.notna(v)])
@@ -118,7 +184,7 @@ Tin tức mới nhận được liên quan đến doanh nghiệp:
 
 Yêu cầu báo cáo bao gồm các phần sau (sử dụng định dạng Markdown rõ ràng, chuyên nghiệp):
 1. **Đánh giá xu hướng ngắn hạn**: Giải thích xu hướng giá hiện tại dựa trên các đường EMA, RSI, MACD, chỉ báo xu hướng nâng cao (SuperTrend) và khối lượng giao dịch. Tín hiệu này mạnh hay yếu?
-2. **Đánh giá điểm cơ bản & CANSLIM & Tin tức**: Phân tích sức khỏe tài chính doanh nghiệp (P/E, P/B, ROE...) và điểm số chất lượng CANSLIM (xem cổ phiếu này có đà tăng trưởng đột phá doanh thu/lợi nhuận thực chất không) kết hợp tin tức gần đây (tin tức tốt/xấu/trung tính) để bổ trợ cho phân tích kỹ thuật.
+2. **Đánh giá điểm cơ bản & CANSLIM & Tin tức**: Phân tích sức khỏe tài chính doanh nghiệp (P/E, P/B, ROE...) và điểm số chất lượng CANSLIM kết hợp tin tức gần đây để bổ trợ cho phân tích kỹ thuật.
 3. **Kế hoạch giao dịch lướt sóng**:
    - Khuyến nghị hành động (MUA mạnh, MUA, THEO DÕI, BÁN, BÁN mạnh).
    - Vùng giá mua đề xuất (nếu khuyến nghị mua).
@@ -130,12 +196,11 @@ Hãy viết báo cáo bằng tiếng Việt, giọng văn khách quan, sắc bé
 """
 
     if not model:
-        # Báo cáo mẫu/mô phỏng nếu không có API Key
-
+        # Báo cáo mẫu khi không có API Key
         mock_report = f"""
 ### 🚨 Trợ lý AI WaveTrader - Chế độ dùng thử (Demo)
 
-*Lưu ý: Bạn chưa cấu hình `GEMINI_API_KEY` trong file `.env` hoặc Key không hợp lệ. Đây là báo cáo tự động dựa trên quy tắc kỹ thuật cứng.*
+*Lưu ý: Bạn chưa cấu hình `GROQ_API_KEY` trong file `.env` hoặc Key không hợp lệ. Đây là báo cáo tự động dựa trên quy tắc kỹ thuật cứng.*
 
 #### 1. Đánh giá xu hướng ngắn hạn cho **{symbol}**
 - **Trạng thái**: {technical_signals.get('status', 'NEUTRAL')}
@@ -153,15 +218,20 @@ Hãy viết báo cáo bằng tiếng Việt, giọng văn khách quan, sắc bé
 *👉 Vui lòng thêm `GROQ_API_KEY` vào file `.env` ở thư mục gốc để kích hoạt báo cáo phân tích thông minh và chi tiết từ AI Groq.*
 """
         return mock_report
-        
+
     try:
-        logging.info(f"Đang gọi Groq API để phân tích mã {symbol}...")
+        logger.info(f"Đang gọi Groq API để phân tích mã {symbol}...")
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        logging.error(f"Lỗi khi gọi Groq API cho mã {symbol}: {e}")
+        logger.error(f"Lỗi khi gọi Groq API cho mã {symbol}: {e}")
         return f"Không thể tạo báo cáo AI do lỗi kết nối hoặc giới hạn API: {e}"
 
+
 if __name__ == "__main__":
-    # Test thử hàm tạo báo cáo mẫu
-    print(analyze_stock_with_ai("HPG", {"close": 28.5, "high": 28.7, "low": 28.2, "volume": 12000000, "volume_sma20": 10000000}, {"status": "BUY", "score": 2.0, "trend": "BULLISH", "rsi": 62.5, "macd_signal": "Golden Cross", "details": ["Giá vượt EMA20", "MACD cắt lên đường Tín hiệu"]}))
+    print(analyze_stock_with_ai(
+        "HPG",
+        {"close": 28.5, "high": 28.7, "low": 28.2, "volume": 12000000, "volume_sma20": 10000000},
+        {"status": "BUY", "score": 2.0, "trend": "BULLISH", "rsi": 62.5,
+         "macd_signal": "Golden Cross", "details": ["Giá vượt EMA20", "MACD cắt lên đường Tín hiệu"]}
+    ))

@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 # Thiết lập thư mục làm việc
 WORKDIR /app
@@ -20,6 +20,12 @@ COPY . .
 
 # Thiết lập mã hóa tiếng Việt mặc định cho output terminal
 ENV PYTHONIOENCODING=utf-8
+ENV PYTHONUNBUFFERED=1
+ENV TZ=Asia/Ho_Chi_Minh
 
-# Khởi chạy mặc định tiến trình giám sát và Telegram Bot
-CMD ["python", "monitor_portfolio.py"]
+# Healthcheck: kiểm tra process vẫn chạy mỗi 30 giây
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD python -c "import os, sys; sys.exit(0 if os.path.exists('portfolio_monitor.log') else 1)"
+
+# Khởi chạy entrypoint mới (main.py thay thế monitor_portfolio.py cũ)
+CMD ["python", "main.py"]

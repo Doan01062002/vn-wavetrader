@@ -1,0 +1,54 @@
+version: '3.9'
+
+services:
+  wavetrader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vn-wavetrader:latest
+    container_name: wavetrader_prod
+    restart: unless-stopped
+
+    # Nạp toàn bộ biến môi trường từ file .env (không commit file này vào Git!)
+    env_file:
+      - .env
+
+    # Mount volume để lưu log và data ngoài container (tránh mất khi restart)
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+      - ./portfolio_monitor.log:/app/portfolio_monitor.log
+      - ./virtual_portfolio.json:/app/virtual_portfolio.json
+      - ./optimized_params.json:/app/optimized_params.json
+
+    # Logging với rotation để tránh disk đầy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Giới hạn tài nguyên (tránh process run away)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.75'
+          memory: 512M
+        reservations:
+          memory: 128M
+
+    # Healthcheck đồng bộ với Dockerfile
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, sys; sys.exit(0 if os.path.exists('portfolio_monitor.log') else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # Timezone Việt Nam
+    environment:
+      - TZ=Asia/Ho_Chi_Minh
+
+networks:
+  default:
+    name: wavetrader_net

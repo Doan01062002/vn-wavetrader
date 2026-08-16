@@ -78,18 +78,24 @@ def run_backtest(df: pd.DataFrame, strategy_name: str = 'ema_cross', cash: float
     # Chỉ giữ lại các cột cần thiết cho backtest
     bt_df = bt_df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
     
-    # Chọn chiến lược
+    # Chọn chiến lược — tạo dynamic subclass để tránh mutation class variable
+    # (quan trọng: không sửa trực tiếp class attribute vì sẽ ảnh hưởng tất cả lần gọi tiếp theo)
     if strategy_name == 'ema_cross':
-        strat = EmaCrossStrategy
-        if params:
-            strat.short_period = params.get('short_period', 20)
-            strat.long_period = params.get('long_period', 50)
+        short_p = params.get('short_period', 20) if params else 20
+        long_p = params.get('long_period', 50) if params else 50
+        strat = type('EmaCrossStrategyInstance', (EmaCrossStrategy,), {
+            'short_period': short_p,
+            'long_period': long_p
+        })
     elif strategy_name == 'rsi':
-        strat = RsiReversionStrategy
-        if params:
-            strat.rsi_period = params.get('rsi_period', 14)
-            strat.oversold = params.get('oversold', 30)
-            strat.overbought = params.get('overbought', 70)
+        rsi_p = params.get('rsi_period', 14) if params else 14
+        os_p = params.get('oversold', 30) if params else 30
+        ob_p = params.get('overbought', 70) if params else 70
+        strat = type('RsiReversionStrategyInstance', (RsiReversionStrategy,), {
+            'rsi_period': rsi_p,
+            'oversold': os_p,
+            'overbought': ob_p
+        })
     else:
         logging.error(f"Chiến lược {strategy_name} không tồn tại.")
         return {}, ""

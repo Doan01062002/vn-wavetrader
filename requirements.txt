@@ -1,14 +1,29 @@
-vnstock
-pandas
-numpy<2.0.0
-scipy
-ta
-PyPortfolioOpt
-streamlit
-streamlit-lightweight-charts
-google-generativeai
-python-dotenv
-backtesting
-plotly
+# === Core Data & Analysis ===
+vnstock>=3.2.0
+pandas>=2.0.0
+numpy>=1.24.0,<2.0.0
+scipy>=1.10.0
+
+# === Technical Indicators ===
+ta>=0.11.0
+
+# === Portfolio Optimization ===
+PyPortfolioOpt>=1.5.5
+
+# === HTTP & API ===
+requests>=2.31.0
+groq>=0.11.0
+
+# === AI / LLM ===
+# Groq API được sử dụng thay thế cho google-generativeai (đã ngưng do lỗi 429)
+
+# === Database ===
+psycopg2-binary>=2.9.9
+python-dotenv>=1.0.0
+
+# === Backtesting ===
+backtesting>=0.3.3
 bokeh>=2.4.0,<3.0.0
-psycopg2-binary
+
+# === Scheduling ===
+APScheduler>=3.10.0

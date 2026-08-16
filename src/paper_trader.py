@@ -1,9 +1,13 @@
 import os
 import json
 import logging
+import threading
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# Lock bảo vệ tất cả thao tác read/write portfolio — ngăn race condition giữa các thread
+_portfolio_lock = threading.Lock()
 
 PORTFOLIO_FILE = "virtual_portfolio.json"
 
@@ -18,11 +22,11 @@ def init_portfolio():
 from src.database import load_portfolio_data, save_portfolio_data
 
 def load_portfolio() -> dict:
-    """Tải dữ liệu ví ảo từ Database hoặc JSON dự phòng."""
+    """Tải dữ liệu ví ảo từ Database hoặc JSON dự phòng (thread-safe)."""
     return load_portfolio_data()
 
 def save_portfolio(portfolio: dict):
-    """Lưu dữ liệu ví ảo lên Database hoặc JSON dự phòng."""
+    """Lưu dữ liệu ví ảo lên Database hoặc JSON dự phòng (thread-safe)."""
     save_portfolio_data(portfolio)
 
 def get_atr_for_symbol(symbol: str) -> float:
@@ -41,119 +45,115 @@ def get_atr_for_symbol(symbol: str) -> float:
 
 def buy_stock(symbol: str, price: float, quantity: int, stop_loss: float = None, take_profit: float = None) -> dict:
     """
-    Thực hiện lệnh Mua ảo.
-    Lưu ý: Giá cổ phiếu trên VNSTOCK đơn vị là nghìn VNĐ (Ví dụ: FPT giá 135.0 = 135,000 VNĐ)
-    Nên tổng giá trị giao dịch = price * quantity * 1000
+    Thực hiện lệnh Mua ảo (thread-safe).
+    Giá cổ phiếu đơn vị là nghìn VNĐ (FPT 135.0 = 135,000 VNĐ).
+    Tổng giá trị giao dịch = price * quantity * 1000.
     """
-    portfolio = load_portfolio()
-    cost = price * quantity * 1000
-    
-    if portfolio["cash"] < cost:
-        return {"success": False, "message": f"Không đủ tiền mặt để mua! Chi phí: {cost:,.0f}đ | Tiền mặt có sẵn: {portfolio['cash']:,.0f}đ"}
-        
-    portfolio["cash"] -= cost
-    
-    # Tính toán chốt lời/cắt lỗ theo ATR nếu không truyền vào
-    if stop_loss is None or take_profit is None:
-        atr = get_atr_for_symbol(symbol)
-        if atr > 0:
-            if stop_loss is None:
-                stop_loss = round(price - 2 * atr, 2)
-            if take_profit is None:
-                take_profit = round(price + 4 * atr, 2)
+    with _portfolio_lock:
+        portfolio = load_portfolio()
+        cost = price * quantity * 1000
+
+        if portfolio["cash"] < cost:
+            return {"success": False, "message": f"Không đủ tiền mặt để mua! Chi phí: {cost:,.0f}đ | Tiền mặt có sẵn: {portfolio['cash']:,.0f}đ"}
+
+        portfolio["cash"] -= cost
+
+        # Tính toán chốt lời/cắt lỗ theo ATR nếu không truyền vào
+        if stop_loss is None or take_profit is None:
+            atr = get_atr_for_symbol(symbol)
+            if atr > 0:
+                if stop_loss is None:
+                    stop_loss = round(price - 2 * atr, 2)
+                if take_profit is None:
+                    take_profit = round(price + 4 * atr, 2)
+            else:
+                # Fallback về tỉ lệ phần trăm mặc định (-6% / +15%)
+                if stop_loss is None:
+                    stop_loss = round(price * 0.94, 2)
+                if take_profit is None:
+                    take_profit = round(price * 1.15, 2)
+
+        # Kiểm tra xem đã có vị thế của mã này chưa để cộng dồn giá trung bình
+        existing_pos = None
+        for pos in portfolio["positions"]:
+            if pos["symbol"] == symbol:
+                existing_pos = pos
+                break
+
+        if existing_pos:
+            total_qty = existing_pos["quantity"] + quantity
+            total_cost = (existing_pos["buy_price"] * existing_pos["quantity"] * 1000) + cost
+            existing_pos["buy_price"] = (total_cost / total_qty) / 1000
+            existing_pos["quantity"] = total_qty
+            if stop_loss is not None:
+                existing_pos["stop_loss"] = stop_loss
+            if take_profit is not None:
+                existing_pos["take_profit"] = take_profit
+            existing_pos["highest_price"] = existing_pos["buy_price"]
         else:
-            # Fallback về tỉ lệ phần trăm mặc định (-6% / +15%)
-            if stop_loss is None:
-                stop_loss = round(price * 0.94, 2)
-            if take_profit is None:
-                take_profit = round(price * 1.15, 2)
-                
-    # Kiểm tra xem đã có vị thế của mã này chưa để cộng dồn giá trung bình
-    existing_pos = None
-    for pos in portfolio["positions"]:
-        if pos["symbol"] == symbol:
-            existing_pos = pos
-            break
-            
-    if existing_pos:
-        # Tính toán giá trung bình mới
-        total_qty = existing_pos["quantity"] + quantity
-        total_cost = (existing_pos["buy_price"] * existing_pos["quantity"] * 1000) + cost
-        existing_pos["buy_price"] = (total_cost / total_qty) / 1000
-        existing_pos["quantity"] = total_qty
-        # Cập nhật chốt lời/cắt lỗ mới nếu được cung cấp
-        if stop_loss is not None:
-            existing_pos["stop_loss"] = stop_loss
-        if take_profit is not None:
-            existing_pos["take_profit"] = take_profit
-        # Reset highest_price về giá mua trung bình mới
-        existing_pos["highest_price"] = existing_pos["buy_price"]
-    else:
-        new_pos = {
-            "symbol": symbol,
-            "buy_price": price,
-            "quantity": quantity,
-            "buy_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "highest_price": price
-        }
-        portfolio["positions"].append(new_pos)
-        
-    save_portfolio(portfolio)
-    return {"success": True, "message": f"Mua ảo thành công {quantity:,} cổ phiếu {symbol} tại giá {price:,.2f} (Tổng: {cost:,.0f}đ)"}
+            new_pos = {
+                "symbol": symbol,
+                "buy_price": price,
+                "quantity": quantity,
+                "buy_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "highest_price": price
+            }
+            portfolio["positions"].append(new_pos)
+
+        save_portfolio(portfolio)
+        return {"success": True, "message": f"Mua ảo thành công {quantity:,} cổ phiếu {symbol} tại giá {price:,.2f} (Tổng: {cost:,.0f}đ)"}
 
 def sell_stock(symbol: str, price: float, quantity: int, reason: str = "MANUAL") -> dict:
-    """Thực hiện lệnh Bán ảo."""
-    portfolio = load_portfolio()
-    
-    target_pos = None
-    for pos in portfolio["positions"]:
-        if pos["symbol"] == symbol:
-            target_pos = pos
-            break
-            
-    if not target_pos:
-        return {"success": False, "message": f"Bạn không nắm giữ cổ phiếu {symbol} trong danh mục ảo!"}
-        
-    if target_pos["quantity"] < quantity:
-        return {"success": False, "message": f"Số lượng nắm giữ không đủ để bán! Nắm giữ: {target_pos['quantity']:,} | Cần bán: {quantity:,}"}
-        
-    revenue = price * quantity * 1000
-    cost = target_pos["buy_price"] * quantity * 1000
-    pnl_amount = revenue - cost
-    pnl_percent = ((price - target_pos["buy_price"]) / target_pos["buy_price"]) * 100
-    
-    # Cập nhật tiền mặt
-    portfolio["cash"] += revenue
-    
-    # Cập nhật số lượng nắm giữ hoặc xóa vị thế
-    if target_pos["quantity"] == quantity:
-        portfolio["positions"].remove(target_pos)
-    else:
-        target_pos["quantity"] -= quantity
-        
-    # Ghi nhận lịch sử giao dịch
-    history_entry = {
-        "symbol": symbol,
-        "buy_price": target_pos["buy_price"],
-        "sell_price": price,
-        "quantity": quantity,
-        "buy_date": target_pos["buy_date"],
-        "sell_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "pnl_amount": pnl_amount,
-        "pnl_percent": pnl_percent,
-        "reason": reason
-    }
-    portfolio["history"].append(history_entry)
-    
-    save_portfolio(portfolio)
-    return {
-        "success": True, 
-        "message": f"Bán ảo thành công {quantity:,} {symbol} tại giá {price:,.2f} ({reason}). Lãi/Lỗ: {pnl_amount:+,.0f}đ ({pnl_percent:+.2f}%)",
-        "pnl_amount": pnl_amount,
-        "pnl_percent": pnl_percent
-    }
+    """Thực hiện lệnh Bán ảo (thread-safe)."""
+    with _portfolio_lock:
+        portfolio = load_portfolio()
+
+        target_pos = None
+        for pos in portfolio["positions"]:
+            if pos["symbol"] == symbol:
+                target_pos = pos
+                break
+
+        if not target_pos:
+            return {"success": False, "message": f"Bạn không nắm giữ cổ phiếu {symbol} trong danh mục ảo!"}
+
+        if target_pos["quantity"] < quantity:
+            return {"success": False, "message": f"Số lượng nắm giữ không đủ! Nắm giữ: {target_pos['quantity']:,} | Cần bán: {quantity:,}"}
+
+        revenue = price * quantity * 1000
+        cost = target_pos["buy_price"] * quantity * 1000
+        pnl_amount = revenue - cost
+        pnl_percent = ((price - target_pos["buy_price"]) / target_pos["buy_price"]) * 100
+
+        portfolio["cash"] += revenue
+
+        if target_pos["quantity"] == quantity:
+            portfolio["positions"].remove(target_pos)
+        else:
+            target_pos["quantity"] -= quantity
+
+        history_entry = {
+            "symbol": symbol,
+            "buy_price": target_pos["buy_price"],
+            "sell_price": price,
+            "quantity": quantity,
+            "buy_date": target_pos["buy_date"],
+            "sell_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "pnl_amount": pnl_amount,
+            "pnl_percent": pnl_percent,
+            "reason": reason
+        }
+        portfolio["history"].append(history_entry)
+
+        save_portfolio(portfolio)
+        return {
+            "success": True,
+            "message": f"Bán ảo thành công {quantity:,} {symbol} tại giá {price:,.2f} ({reason}). Lãi/Lỗ: {pnl_amount:+,.0f}đ ({pnl_percent:+.2f}%)",
+            "pnl_amount": pnl_amount,
+            "pnl_percent": pnl_percent
+        }
 
 def check_and_execute_auto_orders(current_prices: dict) -> list:
     """
@@ -178,7 +178,12 @@ def check_and_execute_auto_orders(current_prices: dict) -> list:
                 
             if curr_price > pos["highest_price"]:
                 pos["highest_price"] = curr_price
-                new_sl = round(curr_price * 0.95, 2)  # Dừng lỗ kéo theo cách đỉnh 5%
+                # Trailing stop dựa trên ATR: chính xác hơn % cố định
+                atr_val = get_atr_for_symbol(sym)
+                if atr_val > 0:
+                    new_sl = round(curr_price - 2.0 * atr_val, 2)  # 2x ATR từ đỉnh mới
+                else:
+                    new_sl = round(curr_price * 0.95, 2)  # Fallback 5% nếu không có ATR
                 if new_sl > (pos.get("stop_loss") or 0):
                     pos["stop_loss"] = new_sl
                     alert = f"🔄 *[VÍ ẢO - CHẶN LÃI ĐỘNG]* 🔄\n" \

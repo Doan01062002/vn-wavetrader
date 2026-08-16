@@ -11,6 +11,7 @@ from src.data_fetcher import get_stock_ohlcv, get_stock_news, get_company_ratios
 from src.indicators import check_swing_signals
 from src.portfolio import optimize_portfolio
 from src.llm_analyzer import analyze_stock_with_ai
+from src.rate_limiter import vnstock_limiter
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -29,6 +30,9 @@ SYMBOL_TO_SECTOR = {}
 for sector, syms in SECTORS.items():
     for s in syms:
         SYMBOL_TO_SECTOR[s] = sector
+
+# Cache sector strength trong mỗi phiên quét (tránh gọi lại API cho từng mã)
+_sector_strength_cache: dict = {}  # {sector_name: float (% uptrend)}
 
 load_dotenv()
 
@@ -76,6 +80,65 @@ def send_telegram_message(message: str, reply_markup: dict = None, chat_id: str 
         logging.error(f"Lỗi kết nối gửi Telegram: {e}")
         return False
 
+def _calculate_all_sector_strengths(cached_dfs: dict) -> None:
+    """
+    Tính sức mạnh tất cả các ngành một lần trước vòng lặp quét chính.
+    Lưu vào _sector_strength_cache để tái sử dụng — tránh gọi API lặp cho từng mã.
+    """
+    from src.indicators import calculate_indicators
+    global _sector_strength_cache
+    _sector_strength_cache.clear()
+
+    for sector, peers in SECTORS.items():
+        uptrend_count = 0
+        total_count = 0
+        for peer in peers:
+            peer_df = cached_dfs.get(peer)
+            if peer_df is None:
+                with vnstock_limiter:
+                    peer_df = get_stock_ohlcv(peer, length=50)
+                if not peer_df.empty:
+                    peer_df = calculate_indicators(peer_df, symbol=peer)
+            if not peer_df.empty and 'ema_short' in peer_df.columns:
+                if peer_df['close'].iloc[-1] > peer_df['ema_short'].iloc[-1]:
+                    uptrend_count += 1
+                total_count += 1
+
+        _sector_strength_cache[sector] = (uptrend_count / total_count * 100) if total_count > 0 else 50.0
+        logging.info(f"Sector {sector}: {_sector_strength_cache[sector]:.1f}% uptrend")
+
+
+def _recalculate_status(score: float) -> str:
+    """Tính lại status dựa trên score (dùng sau khi score bị điều chỉnh bởi filter)."""
+    if score >= 3:
+        return "STRONG BUY"
+    elif score >= 1:
+        return "BUY"
+    elif score > -1:
+        return "NEUTRAL"
+    elif score > -3:
+        return "SELL"
+    else:
+        return "STRONG SELL"
+
+
+def _calculate_confidence(signals: dict, volume_confirmed: bool, weekly_ok: bool, sector_ok: bool) -> str:
+    """
+    Tính mức độ tin cậy (confidence) cho tín hiệu MUA dựa trên các yếu tố xác nhận.
+    Trả về: 'CAO', 'TRUNG BÌNH', hoặc 'THẤP'
+    """
+    if signals["status"] not in ["BUY", "STRONG BUY"]:
+        return "N/A"
+
+    confirmations = sum([volume_confirmed, weekly_ok, sector_ok])
+    if confirmations >= 3:
+        return "CAO"
+    elif confirmations >= 2:
+        return "TRUNG BÌNH"
+    else:
+        return "THẤP"
+
+
 def send_daily_report_to_telegram(chat_id: str = None) -> bool:
     """
     Quét toàn bộ cổ phiếu theo dõi, chạy tối ưu và gửi báo cáo phân tích lướt sóng về Telegram.
@@ -109,94 +172,109 @@ def send_daily_report_to_telegram(chat_id: str = None) -> bool:
                          f"Chỉ số VN30 hiện tại đang nằm dưới đường xu hướng EMA20. " \
                          f"Hệ thống đã kích hoạt chế độ phòng vệ rủi ro vĩ mô, **vô hiệu hóa các tín hiệu Mua mới** để bảo vệ tài sản của bạn!\n\n"
                          
-    # 2. Tải dữ liệu và quét tín hiệu
+    # 2. Tải dữ liệu OHLCV cho tất cả mã trước (để tính sector strength)
     scanned_stocks = []
     buy_list = []
     price_dict = {}
     cached_dfs = {}
-    
+
+    logging.info("Đang tải dữ liệu OHLCV cho tất cả mã theo dõi...")
     for sym in DEFAULT_WATCHLIST:
-        df = get_stock_ohlcv(sym, length=120) # 120 phiên gần nhất là đủ
+        with vnstock_limiter:
+            df = get_stock_ohlcv(sym, length=120)
         if not df.empty:
             from src.indicators import calculate_indicators
             df = calculate_indicators(df, symbol=sym)
             cached_dfs[sym] = df
             price_dict[sym] = df['close']
-            signals = check_swing_signals(df, symbol=sym)
-            
-            # 1.1 Lọc Khối lượng bùng nổ (Breakout Volume Confirmation)
-            if signals["status"] in ["BUY", "STRONG BUY"] and not signals.get("volume_breakout", False):
-                signals["status"] = "NEUTRAL"
-                signals["details"].append("Tín hiệu MUA bị chặn do thanh khoản bùng nổ yếu (<1.5 lần trung bình 20 ngày)")
+    logging.info(f"Đã tải {len(cached_dfs)}/{len(DEFAULT_WATCHLIST)} mã thành công.")
 
-            # 1.2 Confirm xu hướng trung hạn bằng khung tuần (1W) để loại bỏ tín hiệu mua ngược trend
+    # 2.1 Tính sector strength TRƯỚC khi quét tín hiệu (để cache sẵn cho filter)
+    _calculate_all_sector_strengths(cached_dfs)
+
+    # 3. Quét tín hiệu và áp dụng pipeline lọc
+    
+    for sym in DEFAULT_WATCHLIST:
+        df = cached_dfs.get(sym)
+        if df is not None and not df.empty:
+            signals = check_swing_signals(df, symbol=sym)
+            original_score = signals["score"]
+            original_status = signals["status"]
+
+            # --- Các yếu tố xác nhận (dùng cho Confidence Level) ---
+            volume_confirmed = signals.get("volume_breakout", False)
+            weekly_ok = True
+            sector_ok = True
+
+            # 3.1 Volume Breakout — SOFT FACTOR (không chặn, chỉ cảnh báo)
+            if signals["status"] in ["BUY", "STRONG BUY"]:
+                if not volume_confirmed:
+                    signals["details"].append("⚠️ Thanh khoản chưa xác nhận (<1.5x TB 20 ngày)")
+                else:
+                    signals["details"].append("✅ Thanh khoản xác nhận mạnh (≥1.5x TB 20 ngày)")
+
+            # 3.2 Xu hướng trung hạn khung tuần (1W) — SOFT FACTOR (trừ điểm)
             if signals["status"] in ["BUY", "STRONG BUY"]:
                 try:
-                    df_weekly = get_stock_ohlcv(sym, length=365, interval="1W")
+                    with vnstock_limiter:
+                        df_weekly = get_stock_ohlcv(sym, length=365, interval="1W")
                     if not df_weekly.empty and len(df_weekly) >= 30:
                         from ta.trend import EMAIndicator
                         ema10_w = EMAIndicator(close=df_weekly['close'], window=10).ema_indicator()
                         ema30_w = EMAIndicator(close=df_weekly['close'], window=30).ema_indicator()
                         if ema10_w.iloc[-1] < ema30_w.iloc[-1]:
-                            signals["status"] = "NEUTRAL"
-                            signals["details"].append("Tín hiệu MUA bị chặn do xu hướng khung tuần (1W) đang Downtrend (EMA10 < EMA30)")
+                            weekly_ok = False
+                            signals["score"] -= 1.5
+                            signals["details"].append("⚠️ Xu hướng tuần đang giảm (EMA10w < EMA30w) — Score -1.5")
+                            signals["status"] = _recalculate_status(signals["score"])
                 except Exception as weekly_e:
                     logging.error(f"Lỗi kiểm tra khung tuần cho {sym}: {weekly_e}")
 
-            # 1.3 Lọc theo Độ rộng thị trường VN30 (Market Breadth Filter)
+            # 3.3 Độ rộng thị trường VN30 — HARD GATE (giữ nguyên, bảo vệ vốn)
             if signals["status"] in ["BUY", "STRONG BUY"] and is_market_risky:
                 signals["status"] = "NEUTRAL"
-                signals["details"].append("Tín hiệu MUA bị chặn do độ rộng thị trường chung rủi ro cao")
-                
-            # 1.4 Lọc Sức mạnh nhóm ngành (Sector Strength Filter) để đảm bảo đồng thuận dòng tiền ngành
+                signals["details"].append("🛑 Tín hiệu MUA bị chặn do VN30 dưới EMA20 (bảo vệ dòng vốn)")
+
+            # 3.4 Sức mạnh nhóm ngành — SOFT FACTOR (trừ điểm)
             if signals["status"] in ["BUY", "STRONG BUY"]:
                 sector = SYMBOL_TO_SECTOR.get(sym)
                 if sector:
-                    try:
-                        peers = SECTORS[sector]
-                        uptrend_peers = 0
-                        scanned_peers = 0
-                        for peer in peers:
-                            if peer == sym:
-                                peer_df = df
-                            else:
-                                peer_df = get_stock_ohlcv(peer, length=50)
-                                if not peer_df.empty:
-                                    from src.indicators import calculate_indicators
-                                    peer_df = calculate_indicators(peer_df, symbol=peer)
-                            
-                            if not peer_df.empty and 'ema_short' in peer_df.columns:
-                                if peer_df['close'].iloc[-1] > peer_df['ema_short'].iloc[-1]:
-                                    uptrend_peers += 1
-                                scanned_peers += 1
-                            time.sleep(1.0)  # Tránh vượt giới hạn gọi API
-                            
-                        if scanned_peers > 0:
-                            sector_strength = (uptrend_peers / scanned_peers) * 100
-                            if sector_strength < 50.0:
-                                signals["status"] = "NEUTRAL"
-                                signals["details"].append(f"Tín hiệu MUA bị chặn do sóng ngành {sector} yếu (chỉ {sector_strength:.1f}% cp nằm trên EMA20)")
-                    except Exception as sector_e:
-                        logging.error(f"Lỗi kiểm tra sức mạnh ngành {sector} cho {sym}: {sector_e}")
-            
+                    sector_strength = _sector_strength_cache.get(sector, 50.0)
+                    if sector_strength < 50.0:
+                        sector_ok = False
+                        signals["score"] -= 0.5
+                        signals["details"].append(f"⚠️ Sóng ngành {sector} yếu ({sector_strength:.1f}%) — Score -0.5")
+                        signals["status"] = _recalculate_status(signals["score"])
+
+            # --- Tính Confidence Level ---
+            confidence = _calculate_confidence(signals, volume_confirmed, weekly_ok, sector_ok)
+
+            # --- Logging chi tiết pipeline ---
+            if original_status in ["BUY", "STRONG BUY"] or signals["status"] in ["BUY", "STRONG BUY"]:
+                logging.info(
+                    f"[PIPELINE {sym}] Score gốc: {original_score:+.1f} ({original_status}) → "
+                    f"Score cuối: {signals['score']:+.1f} ({signals['status']}) | "
+                    f"Volume: {'✅' if volume_confirmed else '⚠️'} | "
+                    f"Weekly: {'✅' if weekly_ok else '⚠️ -1.5'} | "
+                    f"Market: {'✅' if not is_market_risky else '🛑 BLOCKED'} | "
+                    f"Sector: {'✅' if sector_ok else '⚠️ -0.5'} | "
+                    f"Confidence: {confidence}"
+                )
+
             scanned_stocks.append({
                 "symbol": sym,
                 "status": signals["status"],
                 "score": signals["score"],
                 "price": signals["price"],
                 "rsi": signals["rsi"],
-                "trend": signals["trend"]
+                "trend": signals["trend"],
+                "confidence": confidence,
+                "volume_confirmed": volume_confirmed
             })
-            
+
             if signals["status"] in ["BUY", "STRONG BUY"]:
                 buy_list.append(sym)
-        # Nghỉ 2 giây để tránh chạm giới hạn Rate Limit của vnstock (đặc biệt là tài khoản Guest 20 req/phút)
-        time.sleep(2.0)
-                
-    if not scanned_stocks:
-        logging.warning("Không tải được dữ liệu cổ phiếu nào.")
-        return False
-        
+
     df_scanned = pd.DataFrame(scanned_stocks)
     
     # 2. Tối ưu phân bổ vốn cho các mã BUY/STRONG BUY
@@ -233,7 +311,15 @@ def send_daily_report_to_telegram(chat_id: str = None) -> bool:
     df_buys = df_scanned[df_scanned["status"].isin(["BUY", "STRONG BUY"])].sort_values(by="score", ascending=False)
     if not df_buys.empty:
         for _, row in df_buys.iterrows():
-            body += f"🟢 **{row['symbol']}**: {row['status']} (Điểm: {row['score']:.1f}) | Giá: {row['price']} | RSI: {row['rsi']:.1f}\n"
+            conf = row.get('confidence', 'N/A')
+            vol_icon = "📊" if row.get('volume_confirmed', False) else ""
+            if conf == "CAO":
+                conf_icon = "🟢"
+            elif conf == "TRUNG BÌNH":
+                conf_icon = "🟡"
+            else:
+                conf_icon = "🔴"
+            body += f"🟢 **{row['symbol']}**: {row['status']} (Điểm: {row['score']:.1f}) | Giá: {row['price']} | RSI: {row['rsi']:.1f} | Tin cậy: {conf_icon} {conf} {vol_icon}\n"
     else:
         body += "Không có tín hiệu mua mới hôm nay.\n"
         
