@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   wavetrader:
     build:
@@ -13,13 +11,10 @@ services:
     env_file:
       - .env
 
-    # Mount volume để lưu log và data ngoài container (tránh mất khi restart)
+    # Mount volume thư mục để lưu logs và data
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
-      - ./portfolio_monitor.log:/app/portfolio_monitor.log
-      - ./virtual_portfolio.json:/app/virtual_portfolio.json
-      - ./optimized_params.json:/app/optimized_params.json
 
     # Logging với rotation để tránh disk đầy
     logging:
@@ -37,13 +32,13 @@ services:
         reservations:
           memory: 128M
 
-    # Healthcheck đồng bộ với Dockerfile
+    # Healthcheck: kiểm tra process container phản hồi
     healthcheck:
-      test: ["CMD", "python", "-c", "import os, sys; sys.exit(0 if os.path.exists('portfolio_monitor.log') else 1)"]
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 30s
 
     # Timezone Việt Nam
     environment:

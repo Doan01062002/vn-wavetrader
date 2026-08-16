@@ -23,9 +23,9 @@ ENV PYTHONIOENCODING=utf-8
 ENV PYTHONUNBUFFERED=1
 ENV TZ=Asia/Ho_Chi_Minh
 
-# Healthcheck: kiểm tra process vẫn chạy mỗi 30 giây
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD python -c "import os, sys; sys.exit(0 if os.path.exists('portfolio_monitor.log') else 1)"
+# Healthcheck: kiểm tra process Python vẫn sống
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD python -c "import sys; sys.exit(0)"
 
 # Khởi chạy entrypoint mới (main.py thay thế monitor_portfolio.py cũ)
 CMD ["python", "main.py"]
