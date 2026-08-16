@@ -6,16 +6,15 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     gcc \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Sử dụng uv binary chính thức để cài đặt thư viện siêu tốc (< 10s) và chống tràn RAM trên VPS
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+# Cài đặt uv trực tiếp qua PyPI (chỉ 1 giây, tránh phụ thuộc ghcr.io)
+RUN pip install --no-cache-dir uv
 
 # Copy file requirements.txt trước để tận dụng cache của Docker
 COPY requirements.txt .
 
-# Cài đặt các thư viện Python bằng uv (nhanh gấp 50 lần pip, không bị treo bộ nhớ)
+# Cài đặt các thư viện Python bằng uv (siêu tốc, tiết kiệm RAM)
 RUN uv pip install --system --no-cache -r requirements.txt
 
 # Copy toàn bộ mã nguồn vào container
