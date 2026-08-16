@@ -7,9 +7,6 @@ import requests
 import pandas as pd
 from vnstock import Reference
 
-# Add project root to path
-sys.path.append(os.getcwd())
-
 from src.llm_analyzer import init_gemini
 
 # Khởi tạo logger

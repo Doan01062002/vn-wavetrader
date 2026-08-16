@@ -21,7 +21,6 @@ from typing import Optional
 
 from vnstock import Market
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.paper_trader import load_portfolio, buy_stock, get_atr_for_symbol
 from src.notifier import send_daily_report_to_telegram, send_telegram_message
 from src.data_fetcher import get_stock_ohlcv
@@ -63,16 +62,23 @@ def send_telegram_menu(token: str, chat_id: int) -> None:
         "keyboard": [
             [{"text": "🔮 Xem dự báo"}, {"text": "💰 Xem số dư"}],
             [{"text": "📜 Lịch sử lệnh"}, {"text": "📋 Danh mục"}],
-            [{"text": "❓ Trợ giúp"}]
+            [{"text": "📊 Phân tích mã"}, {"text": "❓ Trợ giúp"}]
         ],
         "resize_keyboard": True,
         "one_time_keyboard": False
     }
     _send(
         token, chat_id,
-        "👋 Xin chào! Tôi là VN-WaveTrader Bot.\n\nHãy chọn một trong các chức năng dưới đây từ menu để tương tác:",
+        "👋 Xin chào! Tôi là *VN-WaveTrader Bot* v2.0\n\n"
+        "🆕 *Tính năng mới:*\n"
+        "• Phân tích chi tiết từng mã: `/detail FPT`\n"
+        "• Stochastic + ADX trong scoring\n"
+        "• Báo cáo tự động 08:30 / 14:45 / 16:30\n"
+        "• AI tóm tắt kết quả quét\n\n"
+        "Hãy chọn chức năng từ menu bên dưới:",
         reply_markup=menu_markup
     )
+
 
 
 def handle_forecast_request(token: str, chat_id: int) -> None:
@@ -319,6 +325,134 @@ def _handle_buy_callback(token: str, chat_id: int, cb_data: str, cb_id: str) -> 
         pass
 
 
+def _handle_detail_callback(token: str, chat_id: int, symbol: str, cb_id: str = None) -> None:
+    """Xử lý callback chi tiết kỹ thuật cho một mã cổ phiếu."""
+    try:
+        from src.indicators import calculate_indicators, check_swing_signals, find_support_resistance
+
+        _send(token, chat_id, f"⏳ Đang phân tích chi tiết **{symbol}**...")
+
+        df = get_stock_ohlcv(symbol, length=120)
+        if df.empty:
+            _send(token, chat_id, f"❌ Không tải được dữ liệu **{symbol}**")
+            return
+
+        df = calculate_indicators(df, symbol=symbol)
+        signals = check_swing_signals(df, symbol=symbol)
+        levels = find_support_resistance(df)
+
+        last = df.iloc[-1]
+        msg = (
+            f"📊 *PHÂN TÍCH CHI TIẾT: {symbol}*\n\n"
+            f"💹 *Giá hiện tại:* {last['close']:.2f}\n"
+            f"📈 *Xu hướng:* {signals['trend']}\n"
+            f"🎯 *Trạng thái:* {signals['status']} (Score: {signals['score']:.1f})\n"
+            f"───────────────────\n"
+            f"*Chỉ báo kỹ thuật:*\n"
+            f"  • RSI: {last['rsi']:.1f}\n"
+            f"  • MACD: {last['macd']:.3f} (Signal: {last['macd_signal']:.3f})\n"
+            f"  • Stoch %K: {last.get('stoch_k', 0):.1f} | %D: {last.get('stoch_d', 0):.1f}\n"
+            f"  • ADX: {last.get('adx', 0):.1f} (+DI: {last.get('adx_pos', 0):.1f} / -DI: {last.get('adx_neg', 0):.1f})\n"
+            f"  • BB %B: {last['bb_percent']:.2f}\n"
+            f"  • SuperTrend: {'🟢 TĂNG' if last.get('supertrend_dir', 0) == 1 else '🔴 GIẢM'}\n"
+            f"  • ATR: {last['atr']:.2f}\n"
+            f"───────────────────\n"
+            f"*Hỗ trợ / Kháng cự:*\n"
+            f"  🟢 Hỗ trợ: {levels.get('support', 'N/A')}\n"
+            f"  🔴 Kháng cự: {levels.get('resistance', 'N/A')}\n"
+            f"───────────────────\n"
+            f"*Chi tiết tín hiệu:*\n"
+        )
+
+        for detail in signals.get("details", [])[:10]:
+            msg += f"  • {detail}\n"
+
+        # Nút hành động
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "📈 Phân tích CANSLIM", "callback_data": f"canslim_{symbol}"},
+                    {"text": f"💼 Mua ảo {symbol}", "callback_data": f"buy_{symbol}_{last['close']:.2f}"}
+                ]
+            ]
+        }
+
+        _send(token, chat_id, msg, reply_markup=reply_markup)
+
+        # Gửi biểu đồ candlestick
+        try:
+            from src.chart_generator import generate_chart, send_chart_to_telegram
+            chart_path = generate_chart(df, symbol, signals)
+            if chart_path:
+                send_chart_to_telegram(
+                    chart_path,
+                    caption=f"📊 Biểu đồ kỹ thuật *{symbol}* — {signals['status']} (Score: {signals['score']:.1f})",
+                    chat_id=str(chat_id)
+                )
+        except Exception as chart_e:
+            logger.error(f"[BOT] Lỗi tạo biểu đồ {symbol}: {chart_e}")
+
+    except Exception as e:
+        logger.error(f"[BOT] Lỗi detail {symbol}: {e}")
+        _send(token, chat_id, f"❌ Lỗi phân tích {symbol}: {str(e)[:200]}")
+
+    # Answer callback nếu từ inline button
+    if cb_id:
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+                json={"callback_query_id": cb_id, "text": f"Phân tích {symbol}"},
+                timeout=5
+            )
+        except Exception:
+            pass
+
+
+def _handle_canslim_callback(token: str, chat_id: int, symbol: str, cb_id: str = None) -> None:
+    """Xử lý callback phân tích CANSLIM cơ bản."""
+    try:
+        from src.fundamental_screener import calculate_canslim_score
+
+        _send(token, chat_id, f"⏳ Đang tính điểm CANSLIM cho **{symbol}**...")
+        result = calculate_canslim_score(symbol)
+
+        msg = (
+            f"📈 *PHÂN TÍCH CANSLIM: {symbol}*\n\n"
+            f"🏆 *Tổng điểm:* **{result['total_score']}/100** — {result['rating']}\n"
+            f"───────────────────\n"
+        )
+
+        for key, data in result.get("details", {}).items():
+            score = data.get("score", 0)
+            desc = data.get("desc", "")
+            msg += f"  {key}: {score}/20 — {desc}\n"
+
+        metrics = result.get("financial_metrics", {})
+        if metrics:
+            msg += (
+                f"\n*Chỉ số tài chính:*\n"
+                f"  • ROE: {metrics.get('roe', 0):.1f}%\n"
+                f"  • P/E: {metrics.get('pe', 0):.1f}\n"
+                f"  • P/B: {metrics.get('pb', 0):.1f}\n"
+                f"  • Net Margin: {metrics.get('net_margin', 0):.1f}%\n"
+            )
+
+        _send(token, chat_id, msg)
+    except Exception as e:
+        logger.error(f"[BOT] Lỗi CANSLIM {symbol}: {e}")
+        _send(token, chat_id, f"❌ Lỗi tính CANSLIM {symbol}: {str(e)[:200]}")
+
+    if cb_id:
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/answerCallbackQuery",
+                json={"callback_query_id": cb_id, "text": f"CANSLIM {symbol}"},
+                timeout=5
+            )
+        except Exception:
+            pass
+
+
 def telegram_polling_loop() -> None:
     """Vòng lặp lắng nghe tương tác Telegram Bot."""
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -372,6 +506,18 @@ def telegram_polling_loop() -> None:
                         threading.Thread(target=handle_watchlist_request, args=(token, chat_id), daemon=True).start()
                     elif text == "❓ Trợ giúp" or text.startswith("/help"):
                         threading.Thread(target=handle_help_request, args=(token, chat_id), daemon=True).start()
+                    elif text.startswith("/detail") or text.startswith("📊"):
+                        # /detail FPT → phân tích chi tiết mã FPT
+                        parts = text.split()
+                        if len(parts) >= 2:
+                            sym = parts[1].upper()
+                            threading.Thread(
+                                target=_handle_detail_callback,
+                                args=(token, chat_id, sym, None),
+                                daemon=True
+                            ).start()
+                        else:
+                            _send(token, chat_id, "📊 Cú pháp: `/detail FPT` — Xem phân tích chi tiết mã cổ phiếu")
 
                 # --- Xử lý callback buttons ---
                 elif "callback_query" in update:
@@ -390,10 +536,25 @@ def telegram_polling_loop() -> None:
                             args=(token, chat_id, cb_data, cb_id),
                             daemon=True
                         ).start()
+                    elif cb_data.startswith("detail_"):
+                        symbol = cb_data.replace("detail_", "")
+                        threading.Thread(
+                            target=_handle_detail_callback,
+                            args=(token, chat_id, symbol, cb_id),
+                            daemon=True
+                        ).start()
+                    elif cb_data.startswith("canslim_"):
+                        symbol = cb_data.replace("canslim_", "")
+                        threading.Thread(
+                            target=_handle_canslim_callback,
+                            args=(token, chat_id, symbol, cb_id),
+                            daemon=True
+                        ).start()
 
         except Exception as e:
             logger.error(f"[BOT] Lỗi trong vòng lặp polling: {e}")
             time.sleep(5)
+
 
 
 def stop_polling() -> None:

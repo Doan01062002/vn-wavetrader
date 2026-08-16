@@ -3,56 +3,55 @@ import logging
 import socket
 import threading
 import time
-socket.setdefaulttimeout(30) # Ngăn chặn nghẽn socket mạng vô hạn khi gọi API (tăng lên 30s tránh kết nối chậm)
+socket.setdefaulttimeout(30) # NgÄƒn cháº·n ngháº½n socket máº¡ng vĂ´ háº¡n khi gá»i API (tÄƒng lĂªn 30s trĂ¡nh káº¿t ná»‘i cháº­m)
 from vnstock import Market, Reference, Fundamental
 
-# Cấu hình logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logger.getLogger(__name__)
 
-# Cache dữ liệu OHLCV để tránh rate limit
+# Cache dá»¯ liá»‡u OHLCV Ä‘á»ƒ trĂ¡nh rate limit
 _ohlcv_cache = {}
-CACHE_DURATION_SECONDS = 1800  # Lưu cache trong 30 phút
+CACHE_DURATION_SECONDS = 1800  # LÆ°u cache trong 30 phĂºt
 
 def _get_stock_ohlcv_internal(symbol: str, length: int = 365, interval: str = "1D") -> pd.DataFrame:
     """
-    Hàm nội bộ thực hiện tải dữ liệu lịch sử giá OHLCV của cổ phiếu bằng vnstock.
+    HĂ m ná»™i bá»™ thá»±c hiá»‡n táº£i dá»¯ liá»‡u lá»‹ch sá»­ giĂ¡ OHLCV cá»§a cá»• phiáº¿u báº±ng vnstock.
     """
     try:
-        logging.info(f"Đang tải dữ liệu lịch sử {symbol} ({length} ngày, interval={interval})...")
+        logger.info(f"Äang táº£i dá»¯ liá»‡u lá»‹ch sá»­ {symbol} ({length} ngĂ y, interval={interval})...")
         market = Market()
-        # Đối với vnstock v4+, gọi qua market.equity(symbol).ohlcv
+        # Äá»‘i vá»›i vnstock v4+, gá»i qua market.equity(symbol).ohlcv
         df = market.equity(symbol).ohlcv(length=length, interval=interval)
         
         if df is None or df.empty:
-            logging.warning(f"Không có dữ liệu trả về cho {symbol}")
+            logger.warning(f"KhĂ´ng cĂ³ dá»¯ liá»‡u tráº£ vá» cho {symbol}")
             return pd.DataFrame()
             
-        # Chuẩn hóa cột về chữ thường hoặc tên chuẩn để các thư viện khác (ta, backtesting) dễ dùng
-        # vnstock v4+ trả về cột dạng: time, open, high, low, close, volume...
-        # Đổi tên cột 'time' thành 'Date' hoặc đặt làm Index
+        # Chuáº©n hĂ³a cá»™t vá» chá»¯ thÆ°á»ng hoáº·c tĂªn chuáº©n Ä‘á»ƒ cĂ¡c thÆ° viá»‡n khĂ¡c (ta, backtesting) dá»… dĂ¹ng
+        # vnstock v4+ tráº£ vá» cá»™t dáº¡ng: time, open, high, low, close, volume...
+        # Äá»•i tĂªn cá»™t 'time' thĂ nh 'Date' hoáº·c Ä‘áº·t lĂ m Index
         df = df.copy()
         if 'time' in df.columns:
             df['Date'] = pd.to_datetime(df['time'])
             df.set_index('Date', inplace=True)
             df.drop(columns=['time'], inplace=True, errors='ignore')
         
-        # Đảm bảo các cột giá là kiểu số
+        # Äáº£m báº£o cĂ¡c cá»™t giĂ¡ lĂ  kiá»ƒu sá»‘
         for col in ['open', 'high', 'low', 'close', 'volume']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
                 
-        # Sắp xếp theo ngày tăng dần (cực kỳ quan trọng cho phân tích kỹ thuật)
+        # Sáº¯p xáº¿p theo ngĂ y tÄƒng dáº§n (cá»±c ká»³ quan trá»ng cho phĂ¢n tĂ­ch ká»¹ thuáº­t)
         df.sort_index(ascending=True, inplace=True)
         return df
         
     except Exception as e:
-        logging.error(f"Lỗi khi tải dữ liệu {symbol}: {e}")
-        # Thử fallback về cách gọi cũ nếu có lỗi
+        logger.error(f"Lá»—i khi táº£i dá»¯ liá»‡u {symbol}: {e}")
+        # Thá»­ fallback vá» cĂ¡ch gá»i cÅ© náº¿u cĂ³ lá»—i
         try:
-            logging.info(f"Đang thử phương thức cũ cho {symbol}...")
-            # Trong một số phiên bản vnstock cũ, dùng stock_historical_data
+            logger.info(f"Äang thá»­ phÆ°Æ¡ng thá»©c cÅ© cho {symbol}...")
+            # Trong má»™t sá»‘ phiĂªn báº£n vnstock cÅ©, dĂ¹ng stock_historical_data
             from vnstock import stock_historical_data
-            # Tính toán start_date và end_date từ length
+            # TĂ­nh toĂ¡n start_date vĂ  end_date tá»« length
             end_date = pd.Timestamp.now().strftime("%Y-%m-%d")
             start_date = (pd.Timestamp.now() - pd.Timedelta(days=length)).strftime("%Y-%m-%d")
             df = stock_historical_data(symbol, start_date, end_date, "stock")
@@ -69,12 +68,17 @@ def _get_stock_ohlcv_internal(symbol: str, length: int = 365, interval: str = "1
             df.sort_index(ascending=True, inplace=True)
             return df
         except Exception as fallback_e:
-            logging.error(f"Fallback thất bại cho {symbol}: {fallback_e}")
+            logger.error(f"Fallback thất bại cho {symbol}: {fallback_e}")
             return pd.DataFrame()
 
 def get_stock_ohlcv(symbol: str, length: int = 365, interval: str = "1D") -> pd.DataFrame:
     """
-    Tải dữ liệu lịch sử giá OHLCV của cổ phiếu bằng vnstock (có cache và bảo vệ chống treo bằng Thread).
+    Tải dữ liệu lịch sử giá OHLCV của cổ phiếu bằng vnstock (có cache, retry và bảo vệ chống treo).
+    
+    Cải tiến v2:
+    - Retry 3 lần với exponential backoff khi API fail
+    - Không cache kết quả lỗi dài hạn (chỉ cache negative 5 phút thay vì 30 phút)
+    - Cache thành công 30 phút như cũ
     """
     cache_key = (symbol, length, interval)
     current_time = time.time()
@@ -83,70 +87,97 @@ def get_stock_ohlcv(symbol: str, length: int = 365, interval: str = "1D") -> pd.
     if cache_key in _ohlcv_cache:
         cached_time, cached_df = _ohlcv_cache[cache_key]
         if current_time - cached_time < CACHE_DURATION_SECONDS:
-            logging.info(f"🔄 [CACHE HIT] Sử dụng dữ liệu cache của {symbol} (khung {interval})")
+            logger.info(f"🔄 [CACHE HIT] Sử dụng dữ liệu cache của {symbol} (khung {interval})")
             return cached_df.copy()
-            
-    result = []
-    exception_container = []
     
-    def target():
-        try:
-            df = _get_stock_ohlcv_internal(symbol, length, interval)
-            result.append(df)
-        except Exception as e:
-            exception_container.append(e)
-            
-    thread = threading.Thread(target=target)
-    thread.daemon = True
-    thread.start()
-    thread.join(timeout=25.0) # Giới hạn cứng 25 giây cho mỗi lần gọi tải dữ liệu
+    # Kiểm tra negative cache (tránh gọi lại API liên tục khi lỗi)
+    negative_cache_key = f"_neg_{symbol}_{length}_{interval}"
+    if negative_cache_key in _ohlcv_cache:
+        neg_time, _ = _ohlcv_cache[negative_cache_key]
+        if current_time - neg_time < 300:  # Negative cache chỉ 5 phút
+            logger.info(f"⏳ [NEG CACHE] Bỏ qua {symbol} — API lỗi gần đây, chờ 5 phút...")
+            return pd.DataFrame()
     
-    if thread.is_alive():
-        logging.warning(f"⚠️ Gọi API tải dữ liệu {symbol} bị quá thời gian chờ (timeout 25s). Bỏ qua để tránh treo.")
-        return pd.DataFrame()
+    # Retry với exponential backoff (tối đa 3 lần)
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        result = []
+        exception_container = []
         
-    if exception_container:
-        logging.error(f"Lỗi khi thực thi tải dữ liệu {symbol}: {exception_container[0]}")
-        return pd.DataFrame()
+        def target():
+            try:
+                df = _get_stock_ohlcv_internal(symbol, length, interval)
+                result.append(df)
+            except Exception as e:
+                exception_container.append(e)
+                
+        thread = threading.Thread(target=target)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout=25.0)
         
-    if result and not result[0].empty:
-        # Lưu vào cache nếu thành công
-        _ohlcv_cache[cache_key] = (current_time, result[0])
-        return result[0].copy()
+        if thread.is_alive():
+            logger.warning(f"⚠️ [{symbol}] Timeout lần {attempt}/{max_retries} (25s)")
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+                continue
+            _ohlcv_cache[negative_cache_key] = (current_time, None)
+            return pd.DataFrame()
+            
+        if exception_container:
+            logger.error(f"[{symbol}] Lỗi lần {attempt}/{max_retries}: {exception_container[0]}")
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+                continue
+            _ohlcv_cache[negative_cache_key] = (current_time, None)
+            return pd.DataFrame()
+            
+        if result and not result[0].empty:
+            _ohlcv_cache[cache_key] = (current_time, result[0])
+            _ohlcv_cache.pop(negative_cache_key, None)
+            if attempt > 1:
+                logger.info(f"✅ [{symbol}] Thành công sau {attempt} lần retry")
+            return result[0].copy()
         
+        if attempt < max_retries:
+            logger.warning(f"[{symbol}] Dữ liệu rỗng lần {attempt}/{max_retries}, retry...")
+            time.sleep(2 ** attempt)
+            
+    _ohlcv_cache[negative_cache_key] = (current_time, None)
     return pd.DataFrame()
+
 
 def get_company_info(symbol: str) -> dict:
     """
-    Lấy thông tin cơ bản và giới thiệu về doanh nghiệp.
+    Láº¥y thĂ´ng tin cÆ¡ báº£n vĂ  giá»›i thiá»‡u vá»  doanh nghiá»‡p.
     """
     try:
         ref = Reference()
         df_info = ref.company(symbol).info()
         if df_info is not None and not df_info.empty:
-            # Chuyển DataFrame thông tin thành dict
-            # Thông thường kết quả trả về dạng bảng 1 dòng hoặc dạng key-value
+            # Chuyá»ƒn DataFrame thĂ´ng tin thĂ nh dict
+            # ThĂ´ng thÆ°á»ng káº¿t quáº£ tráº£ vá» dáº¡ng báº£ng 1 dĂ²ng hoáº·c dáº¡ng key-value
             return df_info.to_dict(orient='records')[0]
     except Exception as e:
-        logging.error(f"Lỗi lấy thông tin doanh nghiệp {symbol}: {e}")
+        logger.error(f"Lá»—i láº¥y thĂ´ng tin doanh nghiá»‡p {symbol}: {e}")
     return {}
 
 def get_company_ratios(symbol: str) -> pd.DataFrame:
     """
-    Lấy các chỉ số tài chính cơ bản (P/E, P/B, ROE, ROA, Debt/Equity...).
+    Láº¥y cĂ¡c chá»‰ sá»‘ tĂ i chĂ­nh cÆ¡ báº£n (P/E, P/B, ROE, ROA, Debt/Equity...).
     """
     try:
         fa = Fundamental()
         df_ratios = fa.equity(symbol).ratio()
         return df_ratios
     except Exception as e:
-        logging.error(f"Lỗi lấy chỉ số tài chính {symbol}: {e}")
+        logger.error(f"Lá»—i láº¥y chá»‰ sá»‘ tĂ i chĂ­nh {symbol}: {e}")
         return pd.DataFrame()
 
 def _get_vn30_symbols_internal() -> list:
     try:
         ref = Reference()
-        # Thử lấy danh sách VN30 (vnstock v4+ trả về pandas.Series)
+        # Thá»­ láº¥y danh sĂ¡ch VN30 (vnstock v4+ tráº£ vá» pandas.Series)
         res = ref.equity.list_by_group("VN30")
         if res is not None and not res.empty:
             if isinstance(res, pd.Series):
@@ -156,12 +187,12 @@ def _get_vn30_symbols_internal() -> list:
             else:
                 return list(res)
     except Exception as e:
-        logging.error(f"Lỗi lấy danh sách VN30 từ Reference: {e}")
+        logger.error(f"Lá»—i láº¥y danh sĂ¡ch VN30 tá»« Reference: {e}")
     return []
 
 def get_vn30_symbols() -> list:
     """
-    Lấy danh sách các mã cổ phiếu trong nhóm VN30 (có bảo vệ chống treo bằng Thread).
+    Láº¥y danh sĂ¡ch cĂ¡c mĂ£ cá»• phiáº¿u trong nhĂ³m VN30 (cĂ³ báº£o vá»‡ chá»‘ng treo báº±ng Thread).
     """
     result = []
     
@@ -172,11 +203,11 @@ def get_vn30_symbols() -> list:
     thread = threading.Thread(target=target)
     thread.daemon = True
     thread.start()
-    thread.join(timeout=15.0) # Giới hạn cứng 15 giây
+    thread.join(timeout=15.0) # Giá»›i háº¡n cá»©ng 15 giĂ¢y
     
     if thread.is_alive():
-        logging.warning("⚠️ Lấy danh sách VN30 bị quá thời gian chờ (timeout 15s). Sử dụng danh sách cứng dự phòng.")
-        # Danh sách VN30 cứng làm dự phòng để đảm bảo hệ thống luôn hoạt động
+        logger.warning("â ï¸ Láº¥y danh sĂ¡ch VN30 bá»‹ quĂ¡ thá»i gian chá» (timeout 15s). Sá»­ dá»¥ng danh sĂ¡ch cá»©ng dá»± phĂ²ng.")
+        # Danh sĂ¡ch VN30 cá»©ng lĂ m dá»± phĂ²ng Ä‘á»ƒ Ä‘áº£m báº£o há»‡ thá»‘ng luĂ´n hoáº¡t Ä‘á»™ng
         return [
             "ACB", "BCG", "BID", "BVH", "CTG", "FPT", "GAS", "GVR", "HDB", "HPG", 
             "MBB", "MSN", "MWG", "PLX", "POW", "SAB", "SHB", "SSB", "SSI", "STB", 
@@ -186,7 +217,7 @@ def get_vn30_symbols() -> list:
     if result and result[0]:
         return result[0]
         
-    # Trả về danh sách tĩnh dự phòng nếu có lỗi
+    # Tráº£ vá» danh sĂ¡ch tÄ©nh dá»± phĂ²ng náº¿u cĂ³ lá»—i
     return [
         "ACB", "BCG", "BID", "BVH", "CTG", "FPT", "GAS", "GVR", "HDB", "HPG", 
         "MBB", "MSN", "MWG", "PLX", "POW", "SAB", "SHB", "SSB", "SSI", "STB", 
@@ -195,10 +226,10 @@ def get_vn30_symbols() -> list:
 
 def get_stock_news(symbol: str, limit: int = 5) -> list:
     """
-    Lấy danh sách tin tức mới nhất của cổ phiếu từ vnstock.
+    Láº¥y danh sĂ¡ch tin tá»©c má»›i nháº¥t cá»§a cá»• phiáº¿u tá»« vnstock.
     """
     try:
-        logging.info(f"Đang tải tin tức cho mã {symbol} (tối đa {limit} tin)...")
+        logger.info(f"Äang táº£i tin tá»©c cho mĂ£ {symbol} (tá»‘i Ä‘a {limit} tin)...")
         ref = Reference()
         df_news = ref.company(symbol).news()
         
@@ -214,12 +245,12 @@ def get_stock_news(symbol: str, limit: int = 5) -> list:
             })
         return news_list
     except Exception as e:
-        logging.error(f"Lỗi khi lấy tin tức của {symbol}: {e}")
+        logger.error(f"Lá»—i khi láº¥y tin tá»©c cá»§a {symbol}: {e}")
         return []
 
 def get_intraday_flow(symbol: str) -> dict:
     """
-    Phân tích dòng tiền mua/bán chủ động và lệnh lớn cá mập trong phiên giao dịch gần nhất.
+    PhĂ¢n tĂ­ch dĂ²ng tiá»n mua/bĂ¡n chá»§ Ä‘á»™ng vĂ  lá»‡nh lá»›n cĂ¡ máº­p trong phiĂªn giao dá»‹ch gáº§n nháº¥t.
     """
     flow_summary = {
         "total_volume": 0,
@@ -236,28 +267,28 @@ def get_intraday_flow(symbol: str) -> dict:
     }
     
     try:
-        logging.info(f"Đang tải và phân tích khớp lệnh thời gian thực của {symbol}...")
+        logger.info(f"Äang táº£i vĂ  phĂ¢n tĂ­ch khá»›p lá»‡nh thá»i gian thá»±c cá»§a {symbol}...")
         mkt = Market()
         df_trades = mkt.equity(symbol).trades()
         
         if df_trades is None or df_trades.empty:
-            logging.warning(f"Không có dữ liệu khớp lệnh trong phiên cho {symbol}")
+            logger.warning(f"KhĂ´ng cĂ³ dá»¯ liá»‡u khá»›p lá»‡nh trong phiĂªn cho {symbol}")
             return flow_summary
             
-        # Đảm bảo kiểu dữ liệu chuẩn
+        # Äáº£m báº£o kiá»ƒu dá»¯ liá»‡u chuáº©n
         df_trades = df_trades.copy()
         df_trades['volume'] = pd.to_numeric(df_trades['volume'], errors='coerce')
         df_trades['price'] = pd.to_numeric(df_trades['price'], errors='coerce')
         df_trades.dropna(subset=['volume', 'price'], inplace=True)
         
-        # 1. Tổng khối lượng khớp lệnh
+        # 1. Tá»•ng khá»‘i lÆ°á»£ng khá»›p lá»‡nh
         total_vol = df_trades['volume'].sum()
         flow_summary["total_volume"] = int(total_vol)
         
         if total_vol == 0:
             return flow_summary
             
-        # 2. Tính khối lượng mua / bán chủ động
+        # 2. TĂ­nh khá»‘i lÆ°á»£ng mua / bĂ¡n chá»§ Ä‘á»™ng
         df_buy = df_trades[df_trades['match_type'].str.lower() == 'buy']
         df_sell = df_trades[df_trades['match_type'].str.lower() == 'sell']
         
@@ -269,10 +300,10 @@ def get_intraday_flow(symbol: str) -> dict:
         flow_summary["net_volume"] = int(buy_vol - sell_vol)
         flow_summary["ratio_buy"] = float(buy_vol / total_vol)
         
-        # 3. Phân tích lệnh lớn (Cá mập)
-        # Định nghĩa giá trị lệnh lớn: >= 50 triệu VNĐ (giá đơn vị: nghìn VNĐ, nên giá * vol >= 50,000)
+        # 3. PhĂ¢n tĂ­ch lá»‡nh lá»›n (CĂ¡ máº­p)
+        # Äá»‹nh nghÄ©a giĂ¡ trá»‹ lá»‡nh lá»›n: >= 50 triá»‡u VNÄ (giĂ¡ Ä‘Æ¡n vá»‹: nghĂ¬n VNÄ, nĂªn giĂ¡ * vol >= 50,000)
         df_trades['value_vnd'] = df_trades['price'] * df_trades['volume'] * 1000
-        df_large = df_trades[df_trades['value_vnd'] >= 50000000] # >= 50 triệu VNĐ
+        df_large = df_trades[df_trades['value_vnd'] >= 50000000] # >= 50 triá»‡u VNÄ
         
         large_buy = df_large[df_large['match_type'].str.lower() == 'buy']
         large_sell = df_large[df_large['match_type'].str.lower() == 'sell']
@@ -292,18 +323,18 @@ def get_intraday_flow(symbol: str) -> dict:
         return flow_summary
         
     except Exception as e:
-        logging.error(f"Lỗi phân tích dòng tiền trong phiên cho {symbol}: {e}")
+        logger.error(f"Lá»—i phĂ¢n tĂ­ch dĂ²ng tiá»n trong phiĂªn cho {symbol}: {e}")
         return flow_summary
 
 if __name__ == "__main__":
-    # Test thử
+    # Test thá»­
     df = get_stock_ohlcv("FPT", length=10)
-    print("Dữ liệu FPT:")
+    print("Dá»¯ liá»‡u FPT:")
     print(df.head(2))
-    print("\nThông tin VN30:")
+    print("\nThĂ´ng tin VN30:")
     print(get_vn30_symbols()[:5])
-    print("\nTin tức FPT:")
+    print("\nTin tá»©c FPT:")
     print(get_stock_news("FPT", limit=2))
-    print("\nDòng tiền trong phiên FPT:")
+    print("\nDĂ²ng tiá»n trong phiĂªn FPT:")
     print(get_intraday_flow("FPT"))
 

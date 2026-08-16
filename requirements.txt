@@ -27,3 +27,9 @@ bokeh>=2.4.0,<3.0.0
 
 # === Scheduling ===
 APScheduler>=3.10.0
+
+# === Charts ===
+matplotlib>=3.7.0
+
+# === Testing ===
+pytest>=7.0.0

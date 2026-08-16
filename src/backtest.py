@@ -6,7 +6,7 @@ from backtesting import Backtest, Strategy
 from backtesting.lib import crossover
 
 # Cấu hình logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 # Định nghĩa các chỉ báo phụ trợ
 def EMA(values, n):

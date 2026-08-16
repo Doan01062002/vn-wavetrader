@@ -1,25 +1,25 @@
-import pandas as pd
+﻿import pandas as pd
 import numpy as np
 import logging
 from pypfopt import expected_returns, risk_models
 from pypfopt.efficient_frontier import EfficientFrontier
 from pypfopt.hierarchical_portfolio import HRPOpt
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logger.getLogger(__name__)
 
 def optimize_portfolio(prices_df: pd.DataFrame, target_symbols: list, method: str = 'hrp') -> tuple:
     """
-    Tối ưu hóa tỷ trọng danh mục đầu tư bằng PyPortfolioOpt.
-    Trả về: (dict_weights, dict_performance)
+    Tá»‘i Æ°u hĂ³a tá»· trá»ng danh má»¥c Ä‘áº§u tÆ° báº±ng PyPortfolioOpt.
+    Tráº£ vá»: (dict_weights, dict_performance)
     """
     if len(target_symbols) < 2:
-        # Nếu chỉ có 1 mã hoặc không có mã nào, phân bổ 100% hoặc 0%
+        # Náº¿u chá»‰ cĂ³ 1 mĂ£ hoáº·c khĂ´ng cĂ³ mĂ£ nĂ o, phĂ¢n bá»• 100% hoáº·c 0%
         if len(target_symbols) == 1:
             return {target_symbols[0]: 1.0}, {"expected_return": None, "volatility": None, "sharpe": None}
         return {}, {}
         
     try:
-        # Lọc dữ liệu giá của các mã đích
+        # Lá»c dá»¯ liá»‡u giĂ¡ cá»§a cĂ¡c mĂ£ Ä‘Ă­ch
         available_cols = [col for col in target_symbols if col in prices_df.columns]
         if len(available_cols) < 2:
             if len(available_cols) == 1:
@@ -28,19 +28,19 @@ def optimize_portfolio(prices_df: pd.DataFrame, target_symbols: list, method: st
             
         df_prices = prices_df[available_cols].dropna()
         if len(df_prices) < 20:
-            logging.warning("Dữ liệu giá lịch sử quá ngắn để chạy tối ưu danh mục.")
-            # Phân bổ đều mặc định
+            logger.warning("Dá»¯ liá»‡u giĂ¡ lá»‹ch sá»­ quĂ¡ ngáº¯n Ä‘á»ƒ cháº¡y tá»‘i Æ°u danh má»¥c.")
+            # PhĂ¢n bá»• Ä‘á»u máº·c Ä‘á»‹nh
             equal_weight = 1.0 / len(available_cols)
             return {sym: equal_weight for sym in available_cols}, {}
             
         if method == 'hrp':
-            # Hierarchical Risk Parity (Phân bổ rủi ro phân tầng) - Cực tốt cho lướt sóng vì không yêu cầu dự báo lợi nhuận kỳ vọng (vốn rất khó dự báo ngắn hạn)
+            # Hierarchical Risk Parity (PhĂ¢n bá»• rá»§i ro phĂ¢n táº§ng) - Cá»±c tá»‘t cho lÆ°á»›t sĂ³ng vĂ¬ khĂ´ng yĂªu cáº§u dá»± bĂ¡o lá»£i nhuáº­n ká»³ vá»ng (vá»‘n ráº¥t khĂ³ dá»± bĂ¡o ngáº¯n háº¡n)
             returns = df_prices.pct_change().dropna()
             hrp = HRPOpt(returns)
             weights = hrp.optimize()
             clean_weights = hrp.clean_weights()
             
-            # Tính hiệu suất danh mục
+            # TĂ­nh hiá»‡u suáº¥t danh má»¥c
             try:
                 perf = hrp.portfolio_performance(verbose=False)
                 performance = {
@@ -49,19 +49,19 @@ def optimize_portfolio(prices_df: pd.DataFrame, target_symbols: list, method: st
                     "sharpe": perf[2]
                 }
             except Exception as perf_e:
-                logging.warning(f"Không thể tính toán hiệu suất danh mục HRP: {perf_e}")
+                logger.warning(f"KhĂ´ng thá»ƒ tĂ­nh toĂ¡n hiá»‡u suáº¥t danh má»¥c HRP: {perf_e}")
                 performance = {}
                 
             return dict(clean_weights), performance
             
         elif method == 'min_volatility':
-            # Tối thiểu hóa biến động (Minimum Variance)
-            # Tính lợi nhuận trung bình lịch sử và ma trận hiệp biến
+            # Tá»‘i thiá»ƒu hĂ³a biáº¿n Ä‘á»™ng (Minimum Variance)
+            # TĂ­nh lá»£i nhuáº­n trung bĂ¬nh lá»‹ch sá»­ vĂ  ma tráº­n hiá»‡p biáº¿n
             mu = expected_returns.mean_historical_return(df_prices)
             S = risk_models.sample_cov(df_prices)
             
             ef = EfficientFrontier(mu, S)
-            # Tối thiểu hóa biến động
+            # Tá»‘i thiá»ƒu hĂ³a biáº¿n Ä‘á»™ng
             weights = ef.min_volatility()
             clean_weights = ef.clean_weights()
             
@@ -73,13 +73,13 @@ def optimize_portfolio(prices_df: pd.DataFrame, target_symbols: list, method: st
                     "sharpe": perf[2]
                 }
             except Exception as perf_e:
-                logging.warning(f"Không thể tính toán hiệu suất danh mục Min Vol: {perf_e}")
+                logger.warning(f"KhĂ´ng thá»ƒ tĂ­nh toĂ¡n hiá»‡u suáº¥t danh má»¥c Min Vol: {perf_e}")
                 performance = {}
                 
             return dict(clean_weights), performance
             
         elif method == 'max_sharpe':
-            # Tối đa hóa Sharpe ratio (Mean-Variance Optimization)
+            # Tá»‘i Ä‘a hĂ³a Sharpe ratio (Mean-Variance Optimization)
             mu = expected_returns.mean_historical_return(df_prices)
             S = risk_models.sample_cov(df_prices)
             
@@ -95,17 +95,17 @@ def optimize_portfolio(prices_df: pd.DataFrame, target_symbols: list, method: st
                 }
                 return dict(clean_weights), performance
             except Exception as e:
-                logging.warning(f"Lỗi khi tối ưu Max Sharpe (có thể do ma trận không xác định dương): {e}. Fallback về HRP.")
+                logger.warning(f"Lá»—i khi tá»‘i Æ°u Max Sharpe (cĂ³ thá»ƒ do ma tráº­n khĂ´ng xĂ¡c Ä‘á»‹nh dÆ°Æ¡ng): {e}. Fallback vá» HRP.")
                 return optimize_portfolio(prices_df, target_symbols, method='hrp')
                 
     except Exception as e:
-        logging.error(f"Lỗi trong quá trình tối ưu danh mục: {e}")
-        # Trả về phân bổ đều nếu gặp lỗi
+        logger.error(f"Lá»—i trong quĂ¡ trĂ¬nh tá»‘i Æ°u danh má»¥c: {e}")
+        # Tráº£ vá» phĂ¢n bá»• Ä‘á»u náº¿u gáº·p lá»—i
         equal_weight = 1.0 / len(target_symbols)
         return {sym: equal_weight for sym in target_symbols}, {}
         
 if __name__ == "__main__":
-    # Test thử với dữ liệu giả lập
+    # Test thá»­ vá»›i dá»¯ liá»‡u giáº£ láº­p
     np.random.seed(42)
     dates = pd.date_range(start="2025-01-01", periods=100)
     data = {
@@ -115,7 +115,7 @@ if __name__ == "__main__":
     }
     df = pd.DataFrame(data, index=dates)
     w, perf = optimize_portfolio(df, ["FPT", "HPG", "SSI"], method='hrp')
-    print("Trọng số tối ưu HRP:")
+    print("Trá»ng sá»‘ tá»‘i Æ°u HRP:")
     print(w)
-    print("Hiệu suất:")
+    print("Hiá»‡u suáº¥t:")
     print(perf)

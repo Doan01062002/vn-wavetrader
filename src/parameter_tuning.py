@@ -4,9 +4,6 @@ import logging
 import pandas as pd
 import sys
 
-# Add project root to path
-sys.path.append(os.getcwd())
-
 from src.backtest import run_backtest
 from config import INDICATOR_PARAMS
 

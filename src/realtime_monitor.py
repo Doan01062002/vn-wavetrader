@@ -26,7 +26,6 @@ import pandas as pd
 from vnstock import Market
 
 # --- Internal imports ---
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import MY_PORTFOLIO, INDICATOR_PARAMS
 from src.notifier import send_telegram_message
 from src.data_fetcher import get_stock_ohlcv, get_stock_news

@@ -5,17 +5,17 @@ from config import INDICATOR_PARAMS
 
 # Import các module của thư viện ta (bukosabino/ta)
 from ta.momentum import RSIIndicator, StochasticOscillator
-from ta.trend import MACD, EMAIndicator, SMAIndicator
+from ta.trend import MACD, EMAIndicator, SMAIndicator, ADXIndicator
 from ta.volatility import BollingerBands, AverageTrueRange
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 def calculate_indicators(df: pd.DataFrame, symbol: str = None) -> pd.DataFrame:
     """
     Tính toán các chỉ báo kỹ thuật cốt lõi sử dụng thư viện ta.
     """
     if df.empty or len(df) < 50:
-        logging.warning("Dữ liệu quá ít hoặc rỗng để tính toán chỉ báo (yêu cầu tối thiểu 50 nến).")
+        logger.warning("Dữ liệu quá ít hoặc rỗng để tính toán chỉ báo (yêu cầu tối thiểu 50 nến).")
         return df
         
     df = df.copy()
@@ -70,7 +70,13 @@ def calculate_indicators(df: pd.DataFrame, symbol: str = None) -> pd.DataFrame:
     # 7. Khối lượng trung bình (Volume SMA 20) để phát hiện đột biến thanh khoản
     df['volume_sma20'] = SMAIndicator(close=df['volume'], window=20).sma_indicator()
     
-    # 8. Chỉ báo SuperTrend nâng cao
+    # 8. ADX — Average Directional Index (đo cường độ xu hướng)
+    adx_obj = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
+    df['adx'] = adx_obj.adx()
+    df['adx_pos'] = adx_obj.adx_pos()  # +DI
+    df['adx_neg'] = adx_obj.adx_neg()  # -DI
+    
+    # 9. Chỉ báo SuperTrend nâng cao
     df = calculate_supertrend(df)
     
     return df
@@ -202,7 +208,50 @@ def check_swing_signals(df: pd.DataFrame, symbol: str = None) -> dict:
         else:
             signals["details"].append("Khối lượng tăng đột biến (>1.5 lần TB 20 ngày)")
 
-    # 6. Tổng hợp tín hiệu (Status)
+    # 6. Đánh giá Stochastic Oscillator (đã tính nhưng chưa dùng trong scoring trước đây)
+    if 'stoch_k' in last_row and 'stoch_d' in last_row:
+        stoch_k = last_row['stoch_k']
+        stoch_d = last_row['stoch_d']
+        prev_stoch_k = prev_row.get('stoch_k', 50)
+        prev_stoch_d = prev_row.get('stoch_d', 50)
+        
+        # Stochastic Golden Cross tại vùng oversold (< 20)
+        if prev_stoch_k <= prev_stoch_d and stoch_k > stoch_d and stoch_k < 25:
+            signals["score"] += 1.5
+            signals["details"].append("[MUA] Stochastic %K cắt lên %D tại vùng quá bán (<25)")
+        # Stochastic Death Cross tại vùng overbought (> 80)
+        elif prev_stoch_k >= prev_stoch_d and stoch_k < stoch_d and stoch_k > 75:
+            signals["score"] -= 1.5
+            signals["details"].append("[BÁN] Stochastic %K cắt xuống %D tại vùng quá mua (>75)")
+        # Vùng oversold/overbought nhẹ
+        elif stoch_k < 20:
+            signals["score"] += 0.5
+            signals["details"].append("Stochastic quá bán (<20) — kỳ vọng phục hồi")
+        elif stoch_k > 80:
+            signals["score"] -= 0.5
+            signals["details"].append("Stochastic quá mua (>80) — rủi ro đảo chiều")
+
+    # 7. Đánh giá ADX — cường độ xu hướng
+    if 'adx' in last_row:
+        adx_val = last_row['adx']
+        adx_pos = last_row.get('adx_pos', 0)
+        adx_neg = last_row.get('adx_neg', 0)
+        signals["adx"] = adx_val
+        
+        if adx_val >= 25:
+            # Xu hướng mạnh — tăng trọng số cho signal hiện tại
+            if adx_pos > adx_neg:
+                signals["score"] += 0.5
+                signals["details"].append(f"ADX={adx_val:.0f} (xu hướng TĂNG mạnh, +DI > -DI)")
+            else:
+                signals["score"] -= 0.5
+                signals["details"].append(f"ADX={adx_val:.0f} (xu hướng GIẢM mạnh, -DI > +DI)")
+        elif adx_val < 20:
+            # Sideway — giảm trọng số tín hiệu (tín hiệu yếu trong sideway)
+            signals["score"] *= 0.7  # Giảm 30% score
+            signals["details"].append(f"⚠️ ADX={adx_val:.0f} (thị trường sideway — tín hiệu yếu, đã giảm 30% trọng số)")
+
+    # 8. Tổng hợp tín hiệu (Status)
     score = signals["score"]
     if score >= 3:
         signals["status"] = "STRONG BUY"
@@ -322,7 +371,7 @@ def find_support_resistance(df: pd.DataFrame, window: int = 20) -> dict:
             levels["resistance"] = float(prices.max())
             
     except Exception as e:
-        logging.error(f"Lỗi tự động tính Hỗ trợ/Kháng cự: {e}")
+        logger.error(f"Lỗi tự động tính Hỗ trợ/Kháng cự: {e}")
         
     return levels
 

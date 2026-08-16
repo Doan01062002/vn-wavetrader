@@ -13,7 +13,8 @@ from src.portfolio import optimize_portfolio
 from src.llm_analyzer import analyze_stock_with_ai
 from src.rate_limiter import vnstock_limiter
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+logger = logger.getLogger(__name__)
 
 # Phân nhóm ngành để lọc tín hiệu đồng thuận sóng ngành (Sector Strength Filter)
 SECTORS = {
@@ -45,10 +46,10 @@ def send_telegram_message(message: str, reply_markup: dict = None, chat_id: str 
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
     
     if not token or token == "your_telegram_bot_token_here":
-        logging.warning("Chưa cấu hình TELEGRAM_BOT_TOKEN trong file .env")
+        logger.warning("Chưa cấu hình TELEGRAM_BOT_TOKEN trong file .env")
         return False
     if not chat_id or chat_id == "your_telegram_chat_id_here":
-        logging.warning("Chưa cấu hình TELEGRAM_CHAT_ID trong file .env")
+        logger.warning("Chưa cấu hình TELEGRAM_CHAT_ID trong file .env")
         return False
         
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -71,13 +72,13 @@ def send_telegram_message(message: str, reply_markup: dict = None, chat_id: str 
             
         response = requests.post(url, json=payload)
         if response.status_code == 200:
-            logging.info("Gửi thông báo Telegram thành công!")
+            logger.info("Gửi thông báo Telegram thành công!")
             return True
         else:
-            logging.error(f"Lỗi gửi Telegram ({response.status_code}): {response.text}")
+            logger.error(f"Lỗi gửi Telegram ({response.status_code}): {response.text}")
             return False
     except Exception as e:
-        logging.error(f"Lỗi kết nối gửi Telegram: {e}")
+        logger.error(f"Lỗi kết nối gửi Telegram: {e}")
         return False
 
 def _calculate_all_sector_strengths(cached_dfs: dict) -> None:
@@ -105,7 +106,7 @@ def _calculate_all_sector_strengths(cached_dfs: dict) -> None:
                 total_count += 1
 
         _sector_strength_cache[sector] = (uptrend_count / total_count * 100) if total_count > 0 else 50.0
-        logging.info(f"Sector {sector}: {_sector_strength_cache[sector]:.1f}% uptrend")
+        logger.info(f"Sector {sector}: {_sector_strength_cache[sector]:.1f}% uptrend")
 
 
 def _recalculate_status(score: float) -> str:
@@ -143,10 +144,10 @@ def send_daily_report_to_telegram(chat_id: str = None) -> bool:
     """
     Quét toàn bộ cổ phiếu theo dõi, chạy tối ưu và gửi báo cáo phân tích lướt sóng về Telegram.
     """
-    logging.info("Bắt đầu khởi chạy Báo cáo lướt sóng tự động...")
+    logger.info("Bắt đầu khởi chạy Báo cáo lướt sóng tự động...")
     
     # 1. Kiểm tra xu hướng thị trường chung qua chỉ số VN30 (chỉ dùng 1 request thay vì 15)
-    logging.info("Đang kiểm tra xu hướng thị trường chung qua chỉ số VN30...")
+    logger.info("Đang kiểm tra xu hướng thị trường chung qua chỉ số VN30...")
     is_market_risky = False
     market_warning = ""
     breadth = 100.0  # Mặc định tốt
@@ -158,14 +159,14 @@ def send_daily_report_to_telegram(chat_id: str = None) -> bool:
             if not df_vn30_index.empty and 'ema_short' in df_vn30_index.columns:
                 close_price = df_vn30_index['close'].iloc[-1]
                 ema20 = df_vn30_index['ema_short'].iloc[-1]
-                logging.info(f"Chỉ số VN30 đóng cửa ở {close_price:.2f} (EMA20: {ema20:.2f})")
+                logger.info(f"Chỉ số VN30 đóng cửa ở {close_price:.2f} (EMA20: {ema20:.2f})")
                 if close_price < ema20:
                     is_market_risky = True
                     breadth = 30.0  # Đặt độ rộng 30% để kích hoạt chế độ phòng vệ
         else:
-            logging.warning("Không tải được dữ liệu chỉ số VN30, bỏ qua kiểm tra rủi ro thị trường.")
+            logger.warning("Không tải được dữ liệu chỉ số VN30, bỏ qua kiểm tra rủi ro thị trường.")
     except Exception as e:
-        logging.error(f"Lỗi khi kiểm tra xu hướng chỉ số VN30: {e}")
+        logger.error(f"Lỗi khi kiểm tra xu hướng chỉ số VN30: {e}")
         
     if is_market_risky:
         market_warning = f"⚠️ *[BẢO VỆ DÒNG VỐN - RỦI RO THỊ TRƯỜNG CHUNG]* ⚠️\n" \
@@ -178,7 +179,7 @@ def send_daily_report_to_telegram(chat_id: str = None) -> bool:
     price_dict = {}
     cached_dfs = {}
 
-    logging.info("Đang tải dữ liệu OHLCV cho tất cả mã theo dõi...")
+    logger.info("Đang tải dữ liệu OHLCV cho tất cả mã theo dõi...")
     for sym in DEFAULT_WATCHLIST:
         with vnstock_limiter:
             df = get_stock_ohlcv(sym, length=120)
@@ -187,7 +188,7 @@ def send_daily_report_to_telegram(chat_id: str = None) -> bool:
             df = calculate_indicators(df, symbol=sym)
             cached_dfs[sym] = df
             price_dict[sym] = df['close']
-    logging.info(f"Đã tải {len(cached_dfs)}/{len(DEFAULT_WATCHLIST)} mã thành công.")
+    logger.info(f"Đã tải {len(cached_dfs)}/{len(DEFAULT_WATCHLIST)} mã thành công.")
 
     # 2.1 Tính sector strength TRƯỚC khi quét tín hiệu (để cache sẵn cho filter)
     _calculate_all_sector_strengths(cached_dfs)
@@ -228,7 +229,7 @@ def send_daily_report_to_telegram(chat_id: str = None) -> bool:
                             signals["details"].append("⚠️ Xu hướng tuần đang giảm (EMA10w < EMA30w) — Score -1.5")
                             signals["status"] = _recalculate_status(signals["score"])
                 except Exception as weekly_e:
-                    logging.error(f"Lỗi kiểm tra khung tuần cho {sym}: {weekly_e}")
+                    logger.error(f"Lỗi kiểm tra khung tuần cho {sym}: {weekly_e}")
 
             # 3.3 Độ rộng thị trường VN30 — HARD GATE (giữ nguyên, bảo vệ vốn)
             if signals["status"] in ["BUY", "STRONG BUY"] and is_market_risky:
@@ -251,7 +252,7 @@ def send_daily_report_to_telegram(chat_id: str = None) -> bool:
 
             # --- Logging chi tiết pipeline ---
             if original_status in ["BUY", "STRONG BUY"] or signals["status"] in ["BUY", "STRONG BUY"]:
-                logging.info(
+                logger.info(
                     f"[PIPELINE {sym}] Score gốc: {original_score:+.1f} ({original_status}) → "
                     f"Score cuối: {signals['score']:+.1f} ({signals['status']}) | "
                     f"Volume: {'✅' if volume_confirmed else '⚠️'} | "
@@ -291,11 +292,11 @@ def send_daily_report_to_telegram(chat_id: str = None) -> bool:
     # 3. Phân tích tâm lý thị trường vĩ mô từ Cafef RSS
     from src.sentiment_analyzer import analyze_market_sentiment
     try:
-        logging.info("Đang phân tích tâm lý thị trường vĩ mô cho bản tin Telegram...")
+        logger.info("Đang phân tích tâm lý thị trường vĩ mô cho bản tin Telegram...")
         market_sent = analyze_market_sentiment()
         sentiment_text = f"📢 *Tâm lý vĩ mô:* {market_sent['label']} (Tích cực: {market_sent['bullish_pct']:.1f}% | Điểm: {market_sent['score']:+.2f})\n"
     except Exception as e:
-        logging.error(f"Lỗi phân tích tâm lý vĩ mô: {e}")
+        logger.error(f"Lỗi phân tích tâm lý vĩ mô: {e}")
         sentiment_text = ""
 
     # 4. Tổng hợp Báo cáo chung gửi Telegram
@@ -345,7 +346,7 @@ def send_daily_report_to_telegram(chat_id: str = None) -> bool:
             canslim_best = calculate_canslim_score(best_symbol)
             canslim_text = f" (Điểm CANSLIM: **{canslim_best['total_score']}/100** - {canslim_best['rating']})"
         except Exception as e:
-            logging.error(f"Lỗi tính CANSLIM cho {best_symbol} trong notifier: {e}")
+            logger.error(f"Lỗi tính CANSLIM cho {best_symbol} trong notifier: {e}")
             canslim_best = None
             canslim_text = ""
             
@@ -376,10 +377,48 @@ def send_daily_report_to_telegram(chat_id: str = None) -> bool:
             # Làm gọn định dạng báo cáo cho Telegram
             ai_report_text += ai_report
             
+    # 5. AI Summary — tổng hợp tín hiệu bằng LLM
+    ai_summary_text = ""
+    if not df_buys.empty and len(df_buys) >= 1:
+        try:
+            from src.llm_analyzer import init_gemini
+            model = init_gemini()
+            if model:
+                # Chuẩn bị dữ liệu cho LLM
+                top_stocks = []
+                for _, row in df_buys.head(5).iterrows():
+                    top_stocks.append(
+                        f"- {row['symbol']}: Score={row['score']:.1f}, RSI={row['rsi']:.0f}, "
+                        f"Trend={row['trend']}, Confidence={row.get('confidence', 'N/A')}"
+                    )
+                stocks_text = "\n".join(top_stocks)
+                
+                summary_prompt = (
+                    f"Bạn là chuyên gia phân tích chứng khoán Việt Nam. "
+                    f"Dựa trên kết quả quét tín hiệu kỹ thuật hôm nay, hãy viết BẢN TÓM TẮT NGẮN GỌN (tối đa 5 câu) "
+                    f"bằng tiếng Việt cho nhà đầu tư cá nhân:\n\n"
+                    f"Độ rộng VN30: {breadth:.1f}%\n"
+                    f"{'Cảnh báo: Thị trường rủi ro cao!' if is_market_risky else 'Thị trường bình thường.'}\n\n"
+                    f"Top tín hiệu MUA:\n{stocks_text}\n\n"
+                    f"Số mã BUY: {len(df_buys)}/{len(scanned_stocks)} mã quét.\n"
+                    f"Hãy nhận xét ngắn gọn về: 1) Xu hướng chung, 2) Mã nào đáng chú ý nhất và tại sao, "
+                    f"3) Lời khuyên cụ thể cho hôm nay."
+                )
+                
+                response = model.generate_content(summary_prompt)
+                if response and hasattr(response, 'text') and response.text:
+                    ai_summary_text = f"\n\n📋 *TÓM TẮT AI:*\n"
+                    ai_summary_text += f"───────────────────\n"
+                    ai_summary_text += response.text[:800]  # Giới hạn 800 ký tự
+                    ai_summary_text += "\n"
+        except Exception as e:
+            logger.error(f"Lỗi tạo AI summary: {e}")
+
     footer = "\n\n───────────────────\n"
     footer += "📈 _Chúc các bạn lướt sóng thành công! VN-WaveTrader System._"
     
-    full_message = header + body + ai_report_text + footer
+    full_message = header + body + ai_report_text + ai_summary_text + footer
+
     main_sent = send_telegram_message(full_message, chat_id=chat_id)
     
     # Gửi riêng từng thẻ tín hiệu Mua để người dùng bấm nút tương tác (Chỉ gửi khi thị trường không rủi ro)

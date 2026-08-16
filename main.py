@@ -4,6 +4,7 @@ VN-WaveTrader — Main Entrypoint
 Khởi chạy đồng thời:
 1. Luồng Telegram Bot Polling (lắng nghe tương tác người dùng)
 2. Luồng giám sát danh mục thời gian thực (SL/TP, hỗ trợ kỹ thuật, tin tức)
+3. Scheduler báo cáo tự động (08:30 / 14:45 / 16:30)
 
 Cải tiến so với monitor_portfolio.py cũ:
 - Logging tập trung và nhất quán (UTF-8, rotation)
@@ -35,12 +36,14 @@ init_db()
 # Import các module chính
 from src.telegram_bot import telegram_polling_loop, stop_polling
 from src.realtime_monitor import run_portfolio_monitor
+from src.scheduler import start_scheduler, stop_scheduler
 
 
 def _shutdown_handler(signum, frame):
     """Graceful shutdown khi nhận SIGTERM hoặc SIGINT."""
     logger.info(f"Nhận tín hiệu dừng ({signum}). Đang tắt hệ thống gracefully...")
     stop_polling()
+    stop_scheduler()
     close_pool()
     logger.info("Hệ thống đã dừng an toàn.")
     sys.exit(0)
@@ -72,6 +75,9 @@ def main():
     bot_thread.start()
     logger.info("Luồng Telegram Bot đã được khởi động.")
 
+    # Khởi động Scheduler báo cáo tự động (08:30 / 14:45 / 16:30)
+    start_scheduler()
+
     # Chạy vòng lặp giám sát chính (blocking — ở thread chính)
     logger.info("Khởi động vòng lặp giám sát danh mục real-time...")
     try:
@@ -80,6 +86,7 @@ def main():
         logger.info("Tiến trình bị dừng bởi người dùng (Ctrl+C).")
     finally:
         stop_polling()
+        stop_scheduler()
         close_pool()
         logger.info("VN-WaveTrader đã tắt sạch sẽ.")
 
