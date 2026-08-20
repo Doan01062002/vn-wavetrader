@@ -46,13 +46,13 @@ dau_tu/
 Mở file `.env` và điền các tham số:
 ```env
 # API Key của Gemini AI (để kích hoạt Trợ lý ảo nhận định)
-GEMINI_API_KEY=AQ.Ab8RN6LXPc...
+GEMINI_API_KEY=your_gemini_api_key_here
 
 # Token của Telegram Bot tự tạo qua @BotFather
-TELEGRAM_BOT_TOKEN=8680319881:AAHXPIz...
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 
 # ID Chat của bạn lấy qua @userinfobot
-TELEGRAM_CHAT_ID=6354225724
+TELEGRAM_CHAT_ID=your_telegram_chat_id_here
 ```
 
 ---

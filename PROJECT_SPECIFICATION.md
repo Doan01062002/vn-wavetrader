@@ -559,7 +559,7 @@ GROQ_API_KEY=gsk_your_groq_api_key_here
 TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
 
 # Chat ID cá nhân lấy qua @userinfobot (Chống nhận lệnh từ người lạ)
-TELEGRAM_CHAT_ID=6354225724
+TELEGRAM_CHAT_ID=your_telegram_chat_id_here
 
 # URL kết nối cơ sở dữ liệu PostgreSQL (Supabase / Neon / Render)
 DATABASE_URL=postgresql://postgres:password@db.supabase.co:5432/postgres
