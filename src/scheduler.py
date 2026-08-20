@@ -23,14 +23,13 @@ _scheduler = None
 
 
 def _send_morning_report():
-    """08:30 — Báo cáo tâm lý thị trường sáng."""
+    """08:30 — Báo cáo tâm lý thị trường sáng & điểm tin nóng."""
     try:
         from src.notifier import send_telegram_message
         from src.sentiment_analyzer import analyze_market_sentiment
 
         logger.info("⏰ [SCHEDULER] Bắt đầu gửi báo cáo sáng (08:30)...")
 
-        # Phân tích tâm lý từ tin tức
         sentiment_result = None
         try:
             sentiment_result = analyze_market_sentiment()
@@ -38,17 +37,40 @@ def _send_morning_report():
             logger.error(f"Lỗi phân tích tâm lý sáng: {e}")
 
         now_str = datetime.now(VN_TZ).strftime("%d/%m/%Y %H:%M")
-        msg = f"☀️ *BÁO CÁO SÁNG — {now_str}*\n\n"
+        msg = f"☀️ *BÁO CÁO TÂM LÝ SÁNG — {now_str}*\n"
+        msg += "───────────────────\n\n"
 
         if sentiment_result and isinstance(sentiment_result, dict):
-            sentiment_score = sentiment_result.get("sentiment_score", "N/A")
-            analysis = sentiment_result.get("analysis", "Không có dữ liệu")
-            msg += f"🧠 *Tâm lý thị trường:* {sentiment_score}\n"
-            msg += f"📝 {analysis[:500]}\n"
-        else:
-            msg += "📝 Chưa có dữ liệu tâm lý thị trường.\n"
+            label = sentiment_result.get("label", "TRUNG TÍNH (Neutral)")
+            score = float(sentiment_result.get("score", 0.0))
+            bullish_pct = float(sentiment_result.get("bullish_pct", 50.0))
+            bearish_pct = float(sentiment_result.get("bearish_pct", 50.0))
 
-        msg += "\n💡 _Sử dụng /forecast để xem tín hiệu kỹ thuật chi tiết._"
+            # Icon theo trạng thái
+            if score >= 0.15:
+                sent_icon = "🟢"
+            elif score <= -0.15:
+                sent_icon = "🔴"
+            else:
+                sent_icon = "⚪"
+
+            msg += f"🧠 *Tâm lý thị trường:* {sent_icon} **{label}**\n"
+            msg += f"📊 *Chỉ số sắc thái:* **{score:+.2f}** (🐂 {bullish_pct:.0f}% Tích cực | 🐻 {bearish_pct:.0f}% Tiêu cực)\n\n"
+
+            details = sentiment_result.get("details", [])
+            if details:
+                msg += "*📰 Điểm tin tài chính đầu ngày:*\n"
+                for item in details[:5]:
+                    item_score = float(item.get("score", 0.0))
+                    tag = "🟢" if item_score >= 0.15 else ("🔴" if item_score <= -0.15 else "⚪")
+                    title = item.get("title", "").strip()
+                    msg += f"  {tag} {title}\n"
+                msg += "\n"
+        else:
+            msg += "📝 *Tâm lý thị trường:* Đang cập nhật dữ liệu đầu phiên.\n\n"
+
+        msg += "───────────────────\n"
+        msg += "💡 _Gõ /forecast hoặc /scan để quét tín hiệu kỹ thuật chi tiết._"
 
         send_telegram_message(msg)
         logger.info("✅ [SCHEDULER] Đã gửi báo cáo sáng thành công.")
@@ -69,7 +91,7 @@ def _send_intraday_scan():
 
 
 def _send_eod_report():
-    """16:30 — Báo cáo tổng kết ngày + danh mục ảo."""
+    """16:30 — Báo cáo tổng kết ngày + danh mục ví ảo."""
     try:
         from src.notifier import send_telegram_message
         from src.paper_trader import load_portfolio
@@ -78,33 +100,40 @@ def _send_eod_report():
 
         portfolio = load_portfolio()
         positions = portfolio.get("positions", [])
-        balance = portfolio.get("balance", 100_000_000)
+        cash = portfolio.get("cash", 100_000_000.0)
+        history = portfolio.get("history", [])
 
         now_str = datetime.now(VN_TZ).strftime("%d/%m/%Y %H:%M")
-        msg = f"🌙 *BÁO CÁO CUỐI NGÀY — {now_str}*\n\n"
+        msg = f"🌙 *BÁO CÁO CUỐI NGÀY — {now_str}*\n"
+        msg += "───────────────────\n\n"
 
         # Thống kê danh mục ảo
-        msg += f"💰 *Số dư ví ảo:* {balance:,.0f} VNĐ\n"
-        msg += f"📊 *Vị thế đang mở:* {len(positions)} mã\n"
+        msg += f"💰 *Tiền mặt khả dụng:* **{cash:,.0f}đ**\n"
+        msg += f"📊 *Vị thế đang mở:* **{len(positions)} mã**\n"
 
         if positions:
-            msg += "\n*Chi tiết vị thế:*\n"
-            for pos in positions[:10]:  # Tối đa 10 vị thế
+            msg += "\n*Chi tiết vị thế nắm giữ:*\n"
+            for pos in positions[:10]:
                 symbol = pos.get("symbol", "?")
                 buy_price = pos.get("buy_price", 0)
                 quantity = pos.get("quantity", 0)
-                msg += f"  • {symbol}: {quantity} cp @ {buy_price:,.0f}\n"
+                sl = pos.get("stop_loss", 0)
+                tp = pos.get("take_profit", 0)
+                sl_str = f"{sl:.2f}" if sl else "N/A"
+                tp_str = f"{tp:.2f}" if tp else "N/A"
+                msg += f"  • **{symbol}**: {quantity:,} cp @ {buy_price:.2f} (SL: {sl_str} | TP: {tp_str})\n"
 
-        # Thống kê giao dịch đã đóng (nếu có)
-        closed = portfolio.get("closed_trades", [])
+        # Thống kê giao dịch đã đóng hôm nay
         today_str = datetime.now(VN_TZ).strftime("%Y-%m-%d")
-        today_trades = [t for t in closed if t.get("sell_date", "").startswith(today_str)]
+        today_trades = [t for t in history if t.get("sell_date", "").startswith(today_str)]
         if today_trades:
-            total_pnl = sum(t.get("pnl", 0) for t in today_trades)
+            total_pnl = sum(t.get("pnl_amount", 0) for t in today_trades)
+            pnl_sign = "+" if total_pnl >= 0 else ""
             msg += f"\n📈 *Giao dịch đóng hôm nay:* {len(today_trades)} lệnh\n"
-            msg += f"💵 *P&L hôm nay:* {total_pnl:+,.0f} VNĐ\n"
+            msg += f"💵 *P&L thực nhận hôm nay:* **{pnl_sign}{total_pnl:,.0f}đ**\n"
 
-        msg += "\n_Hệ thống sẽ tiếp tục giám sát stop-loss realtime._"
+        msg += "\n───────────────────\n"
+        msg += "🛡️ _Hệ thống sẽ tiếp tục giám sát stop-loss & take-profit realtime._"
 
         send_telegram_message(msg)
         logger.info("✅ [SCHEDULER] Đã gửi báo cáo cuối ngày thành công.")

@@ -125,6 +125,66 @@ class TestScheduler:
         assert scheduler._scheduler is None
 
 
+class TestSentimentAnalyzer:
+    """Test sentiment_analyzer.py — phân tích sắc thái tin tức & fallback."""
+
+    def test_keyword_scoring_bullish(self):
+        from src.sentiment_analyzer import _score_text_with_keywords
+        score = _score_text_with_keywords("FPT báo lãi kỷ lục, tăng trưởng bứt phá 30%")
+        assert score > 0.3
+
+    def test_keyword_scoring_bearish(self):
+        from src.sentiment_analyzer import _score_text_with_keywords
+        score = _score_text_with_keywords("Cổ phiếu giảm sàn, bị phạt và cảnh báo hủy niêm yết")
+        assert score < -0.3
+
+    def test_keyword_scoring_neutral(self):
+        from src.sentiment_analyzer import _score_text_with_keywords
+        score = _score_text_with_keywords("Họp đại hội đồng cổ đông thường niên năm 2026")
+        assert score == 0.0
+
+    def test_extract_json_from_markdown_block(self):
+        from src.sentiment_analyzer import _extract_json_from_llm_response
+        sample_text = 'Phân tích xong:\n```json\n[{"index": 1, "score": 0.6, "sentiment": "Tích cực"}]\n```'
+        res = _extract_json_from_llm_response(sample_text)
+        assert res is not None
+        assert len(res) == 1
+        assert res[0]["score"] == 0.6
+
+    def test_build_rule_based_sentiment(self):
+        from src.sentiment_analyzer import _build_rule_based_sentiment
+        news = [
+            {"title": "HPG tăng trưởng lợi nhuận vượt kế hoạch", "url": "", "time": ""},
+            {"title": "SSI ghi nhận dòng tiền vào mua ròng", "url": "", "time": ""}
+        ]
+        res = _build_rule_based_sentiment(news)
+        assert res["score"] > 0
+        assert "Lỗi" not in res["label"]
+        assert "analysis" in res
+        assert "sentiment_score" in res
+
+
+class TestNotifierMessageSplitting:
+    """Test notifier.py message splitting."""
+
+    def test_split_short_message(self):
+        from src.notifier import _split_telegram_message
+        msg = "Short message"
+        chunks = _split_telegram_message(msg, max_len=100)
+        assert len(chunks) == 1
+        assert chunks[0] == "Short message"
+
+    def test_split_long_message_by_paragraphs(self):
+        from src.notifier import _split_telegram_message
+        p1 = "Paragraph 1: " + "a" * 80
+        p2 = "Paragraph 2: " + "b" * 80
+        msg = f"{p1}\n\n{p2}"
+        chunks = _split_telegram_message(msg, max_len=100)
+        assert len(chunks) == 2
+        assert chunks[0] == p1
+        assert chunks[1] == p2
+
+
 class TestConfidenceCalculation:
     """Test pipeline helpers in notifier."""
 
@@ -136,8 +196,6 @@ class TestConfidenceCalculation:
         assert _calculate_confidence(signals_buy, False, False, False) == "THẤP"
         signals_neutral = {"status": "NEUTRAL", "details": []}
         assert _calculate_confidence(signals_neutral, True, True, True) == "N/A"
-
-
 
     def test_recalculate_status(self):
         from src.notifier import _recalculate_status

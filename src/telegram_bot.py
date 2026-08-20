@@ -242,15 +242,106 @@ def handle_watchlist_request(token: str, chat_id: int) -> None:
         _send(token, chat_id, f"❌ *Lỗi khi tải danh mục:* {str(e)}")
 
 
+def handle_market_request(token: str, chat_id: int) -> None:
+    """Xử lý yêu cầu xem độ rộng thị trường và sóng ngành."""
+    _send(token, chat_id, "⏳ *Đang quét độ rộng thị trường VN30 và 7 nhóm ngành chính...*")
+    try:
+        from src.data_fetcher import get_vn30_symbols, get_stock_ohlcv
+        from src.indicators import calculate_indicators
+        from src.notifier import SECTORS
+
+        vn30 = get_vn30_symbols()
+        uptrend_count = 0
+        total_count = 0
+
+        for sym in vn30:
+            df = get_stock_ohlcv(sym, length=50)
+            if not df.empty:
+                df = calculate_indicators(df, symbol=sym)
+                if 'ema_short' in df.columns and len(df) > 0:
+                    if df['close'].iloc[-1] > df['ema_short'].iloc[-1]:
+                        uptrend_count += 1
+                    total_count += 1
+
+        breadth = (uptrend_count / total_count * 100) if total_count > 0 else 50.0
+
+        if breadth >= 60.0:
+            regime = "🟢 *THỊ TRƯỜNG TÍCH CỰC (Uptrend mạnh)*"
+        elif breadth >= 40.0:
+            regime = "🟡 *THỊ TRƯỜNG PHÂN HÓA (Sideways)*"
+        else:
+            regime = "🔴 *THỊ TRƯỜNG RỦI RO (Downtrend / Phòng vệ)*"
+
+        msg = (
+            f"📊 *BÁO CÁO ĐỘ RỘNG THỊ TRƯỜNG VN30* 📊\n"
+            f"───────────────────\n"
+            f"- *Trạng thái:* {regime}\n"
+            f"- *Tỷ lệ mã trên EMA20:* **{breadth:.1f}%** ({uptrend_count}/{total_count} mã)\n"
+            f"───────────────────\n"
+            f"💡 _Khi độ rộng < 40%, hệ thống tự động kích hoạt chế độ phòng vệ rủi ro vĩ mô._"
+        )
+        _send(token, chat_id, msg)
+    except Exception as e:
+        logger.error(f"[BOT] Lỗi market breadth: {e}")
+        _send(token, chat_id, f"❌ *Lỗi khi quét độ rộng thị trường:* {str(e)[:200]}")
+
+
+def handle_sentiment_request(token: str, chat_id: int) -> None:
+    """Xử lý yêu cầu xem chỉ số tâm lý và tin tức nóng."""
+    _send(token, chat_id, "⏳ *Đang phân tích sắc thái tin tức thị trường...*")
+    try:
+        from src.sentiment_analyzer import analyze_market_sentiment
+        sent = analyze_market_sentiment()
+
+        score = float(sent.get("score", 0.0))
+        label = sent.get("label", "TRUNG TÍNH (Neutral)")
+        bullish_pct = float(sent.get("bullish_pct", 50.0))
+        bearish_pct = float(sent.get("bearish_pct", 50.0))
+
+        if score >= 0.15:
+            icon = "🟢"
+        elif score <= -0.15:
+            icon = "🔴"
+        else:
+            icon = "⚪"
+
+        msg = (
+            f"📰 *CHỈ SỐ TÂM LÝ THỊ TRƯỜNG* 📰\n"
+            f"───────────────────\n"
+            f"- *Tâm lý vĩ mô:* {icon} **{label}**\n"
+            f"- *Điểm sắc thái:* **{score:+.2f}**\n"
+            f"- *Tỷ lệ tin tức:* 🐂 {bullish_pct:.0f}% Tích cực | 🐻 {bearish_pct:.0f}% Tiêu cực\n"
+            f"───────────────────\n"
+        )
+
+        details = sent.get("details", [])
+        if details:
+            msg += "*Tin tức thị trường mới nhất:*\n"
+            for item in details[:5]:
+                sc = float(item.get("score", 0.0))
+                tag = "🟢" if sc >= 0.15 else ("🔴" if sc <= -0.15 else "⚪")
+                title = item.get("title", "").strip()
+                msg += f"  {tag} {title}\n"
+
+        _send(token, chat_id, msg)
+    except Exception as e:
+        logger.error(f"[BOT] Lỗi sentiment: {e}")
+        _send(token, chat_id, f"❌ *Lỗi khi phân tích tâm lý:* {str(e)[:200]}")
+
+
 def handle_help_request(token: str, chat_id: int) -> None:
     help_text = (
         "❓ *HƯỚNG DẪN SỬ DỤNG VN-WAVETRADER BOT* ❓\n"
         "───────────────────\n"
-        "🔮 *Xem dự báo:* Phân tích VN30, tín hiệu Mua/Bán, tối ưu vốn HRP, nhận định AI.\n\n"
-        "💰 *Xem số dư:* Tiền mặt, vị thế đang nắm giữ, định giá real-time, tổng lợi nhuận.\n\n"
-        "📜 *Lịch sử lệnh:* 10 giao dịch đã đóng gần nhất kèm hiệu suất.\n\n"
-        "📋 *Danh mục:* Danh sách cổ phiếu đang theo dõi với giá hiện tại.\n\n"
-        "💡 *Mẹo:* Khi hệ thống gửi tín hiệu MUA, click nút **`💼 Xác nhận Mua & Giám sát [Mã]`** để hệ thống tự động theo dõi dừng lỗ/chốt lời!"
+        "🔮 `/scan` hoặc `/forecast`: Quét toàn diện VN30, lọc tín hiệu Mua/Bán & nhận định AI.\n\n"
+        "💰 `/balance` hoặc `/portfolio`: Xem số dư tiền mặt, định giá ví ảo và vị thế mở.\n\n"
+        "📊 `/detail <MÃ>`: Phân tích kỹ thuật chi tiết từng mã (Ví dụ: `/detail FPT`).\n\n"
+        "📈 `/chart <MÃ>`: Xuất biểu đồ kỹ thuật Dark Theme (Ví dụ: `/chart HPG`).\n\n"
+        "🌐 `/market`: Kiểm tra độ rộng thị trường VN30 & trạng thái sóng ngành.\n\n"
+        "📰 `/sentiment`: Xem chỉ số tâm lý đám đông (Fear & Greed Index) & tin tức.\n\n"
+        "📜 `/history`: Xem lịch sử các giao dịch đã đóng của ví ảo.\n\n"
+        "📋 `/watchlist`: Bảng giá theo dõi nhanh danh mục cổ phiếu cốt lõi.\n\n"
+        "💡 *Mẹo:* Khi có tín hiệu MUA, bấm nút **`💼 Xác nhận Mua & Giám sát`** để bot tự động quản trị SL/TP và chặn lãi động cho bạn!"
     )
     _send(token, chat_id, help_text)
 
@@ -258,12 +349,17 @@ def handle_help_request(token: str, chat_id: int) -> None:
 def register_telegram_commands(token: str) -> None:
     url = f"https://api.telegram.org/bot{token}/setMyCommands"
     commands = [
-        {"command": "menu", "description": "Mở bàn phím menu tương tác nhanh"},
-        {"command": "forecast", "description": "Xem dự báo & phân tích thị trường EOD"},
-        {"command": "balance", "description": "Xem số dư & danh mục ví ảo"},
-        {"command": "history", "description": "Xem lịch sử lệnh ví ảo"},
-        {"command": "watchlist", "description": "Xem danh mục cổ phiếu theo dõi"},
-        {"command": "help", "description": "Hướng dẫn sử dụng"}
+        {"command": "menu", "description": "Mở bàn phím tương tác nhanh"},
+        {"command": "scan", "description": "Quét tín hiệu lướt sóng VN30 tức thì"},
+        {"command": "forecast", "description": "Xem báo cáo phân tích toàn diện EOD"},
+        {"command": "portfolio", "description": "Xem số dư & danh mục ví ảo"},
+        {"command": "detail", "description": "Phân tích kỹ thuật chi tiết mã (vd: /detail FPT)"},
+        {"command": "chart", "description": "Xuất biểu đồ nến Dark Theme (vd: /chart FPT)"},
+        {"command": "market", "description": "Xem độ rộng thị trường VN30"},
+        {"command": "sentiment", "description": "Xem tâm lý đám đông & tin tức nóng"},
+        {"command": "history", "description": "Xem lịch sử giao dịch ví ảo"},
+        {"command": "watchlist", "description": "Xem bảng giá danh mục theo dõi"},
+        {"command": "help", "description": "Xem hướng dẫn sử dụng"}
     ]
     try:
         r = requests.post(url, json={"commands": commands}, timeout=10)
@@ -334,7 +430,7 @@ def _handle_detail_callback(token: str, chat_id: int, symbol: str, cb_id: str = 
 
         df = get_stock_ohlcv(symbol, length=120)
         if df.empty:
-            _send(token, chat_id, f"❌ Không tải được dữ liệu **{symbol}**")
+            _send(token, chat_id, f"❌ Không tải được dữ liệu cho mã **{symbol}**")
             return
 
         df = calculate_indicators(df, symbol=symbol)
@@ -367,7 +463,6 @@ def _handle_detail_callback(token: str, chat_id: int, symbol: str, cb_id: str = 
         for detail in signals.get("details", [])[:10]:
             msg += f"  • {detail}\n"
 
-        # Nút hành động
         reply_markup = {
             "inline_keyboard": [
                 [
@@ -396,7 +491,6 @@ def _handle_detail_callback(token: str, chat_id: int, symbol: str, cb_id: str = 
         logger.error(f"[BOT] Lỗi detail {symbol}: {e}")
         _send(token, chat_id, f"❌ Lỗi phân tích {symbol}: {str(e)[:200]}")
 
-    # Answer callback nếu từ inline button
     if cb_id:
         try:
             requests.post(
@@ -406,6 +500,35 @@ def _handle_detail_callback(token: str, chat_id: int, symbol: str, cb_id: str = 
             )
         except Exception:
             pass
+
+
+def _handle_chart_command(token: str, chat_id: int, symbol: str) -> None:
+    """Xử lý lệnh /chart <MÃ> tạo và gửi biểu đồ trực tiếp."""
+    try:
+        from src.indicators import calculate_indicators, check_swing_signals
+        from src.chart_generator import generate_chart, send_chart_to_telegram
+
+        _send(token, chat_id, f"⏳ Đang vẽ biểu đồ kỹ thuật Dark Theme cho **{symbol}**...")
+        df = get_stock_ohlcv(symbol, length=120)
+        if df.empty:
+            _send(token, chat_id, f"❌ Không tải được dữ liệu nến cho mã **{symbol}**")
+            return
+
+        df = calculate_indicators(df, symbol=symbol)
+        signals = check_swing_signals(df, symbol=symbol)
+        chart_path = generate_chart(df, symbol, signals)
+
+        if chart_path:
+            send_chart_to_telegram(
+                chart_path,
+                caption=f"📊 Biểu đồ kỹ thuật *{symbol}* | Giá: {df['close'].iloc[-1]:.2f} | Trạng thái: {signals['status']}",
+                chat_id=str(chat_id)
+            )
+        else:
+            _send(token, chat_id, f"❌ Không thể tạo file ảnh biểu đồ cho {symbol}")
+    except Exception as e:
+        logger.error(f"[BOT] Lỗi lệnh /chart {symbol}: {e}")
+        _send(token, chat_id, f"❌ Lỗi tạo biểu đồ {symbol}: {str(e)[:200]}")
 
 
 def _handle_canslim_callback(token: str, chat_id: int, symbol: str, cb_id: str = None) -> None:
@@ -496,18 +619,41 @@ def telegram_polling_loop() -> None:
 
                     if text.startswith("/start") or text.startswith("/menu") or text.lower() == "menu":
                         send_telegram_menu(token, chat_id)
-                    elif text == "🔮 Xem dự báo" or text.startswith("/forecast"):
+                    elif text in ("🔮 Xem dự báo", "/forecast", "/scan") or text.startswith("/forecast") or text.startswith("/scan"):
                         threading.Thread(target=handle_forecast_request, args=(token, chat_id), daemon=True).start()
-                    elif text == "💰 Xem số dư" or text.startswith("/balance"):
+                    elif text in ("💰 Xem số dư", "/balance", "/portfolio", "/wallet") or text.startswith("/balance") or text.startswith("/portfolio"):
                         threading.Thread(target=handle_balance_request, args=(token, chat_id), daemon=True).start()
-                    elif text == "📜 Lịch sử lệnh" or text.startswith("/history"):
+                    elif text in ("📜 Lịch sử lệnh", "/history") or text.startswith("/history"):
                         threading.Thread(target=handle_history_request, args=(token, chat_id), daemon=True).start()
-                    elif text == "📋 Danh mục" or text.startswith("/watchlist"):
+                    elif text in ("📋 Danh mục", "/watchlist") or text.startswith("/watchlist"):
                         threading.Thread(target=handle_watchlist_request, args=(token, chat_id), daemon=True).start()
-                    elif text == "❓ Trợ giúp" or text.startswith("/help"):
+                    elif text in ("🌐 Độ rộng TT", "/market", "/breadth") or text.startswith("/market"):
+                        threading.Thread(target=handle_market_request, args=(token, chat_id), daemon=True).start()
+                    elif text in ("📰 Tin tức", "/sentiment", "/news") or text.startswith("/sentiment"):
+                        threading.Thread(target=handle_sentiment_request, args=(token, chat_id), daemon=True).start()
+                    elif text in ("❓ Trợ giúp", "/help") or text.startswith("/help"):
                         threading.Thread(target=handle_help_request, args=(token, chat_id), daemon=True).start()
-                    elif text.startswith("/detail") or text.startswith("📊"):
-                        # /detail FPT → phân tích chi tiết mã FPT
+                    elif text == "📊 Phân tích mã":
+                        _send(
+                            token, chat_id,
+                            "📊 *PHÂN TÍCH KỸ THUẬT & BIỂU ĐỒ*\n\n"
+                            "Hãy gửi tin nhắn theo cú pháp:\n"
+                            "• `/detail <MÃ>`: Xem phân tích chi tiết & chỉ báo\n"
+                            "• `/chart <MÃ>`: Xuất biểu đồ nến Dark Theme\n\n"
+                            "*Ví dụ:* `/detail FPT` hoặc `/chart HPG`"
+                        )
+                    elif text.startswith("/chart ") or text.startswith("📈 "):
+                        parts = text.split()
+                        if len(parts) >= 2:
+                            sym = parts[1].upper()
+                            threading.Thread(
+                                target=_handle_chart_command,
+                                args=(token, chat_id, sym),
+                                daemon=True
+                            ).start()
+                        else:
+                            _send(token, chat_id, "📈 Cú pháp: `/chart FPT` — Xuất biểu đồ nến kỹ thuật mã FPT")
+                    elif text.startswith("/detail ") or (text.startswith("📊 ") and len(text.split()) >= 2):
                         parts = text.split()
                         if len(parts) >= 2:
                             sym = parts[1].upper()
@@ -556,9 +702,9 @@ def telegram_polling_loop() -> None:
             time.sleep(5)
 
 
-
 def stop_polling() -> None:
     """Dừng vòng lặp polling (graceful shutdown)."""
     global _polling_active
     _polling_active = False
     logger.info("[BOT] Đã nhận tín hiệu dừng polling.")
+

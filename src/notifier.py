@@ -37,9 +37,50 @@ _sector_strength_cache: dict = {}  # {sector_name: float (% uptrend)}
 
 load_dotenv()
 
+def _split_telegram_message(text: str, max_len: int = 3800) -> list:
+    """Chia nhỏ tin nhắn an toàn theo dòng/đoạn văn để tránh vỡ cú pháp Markdown."""
+    if len(text) <= max_len:
+        return [text]
+
+    chunks = []
+    current_chunk = []
+    current_len = 0
+
+    paragraphs = text.split("\n\n")
+    for p in paragraphs:
+        if current_len + len(p) + 2 <= max_len:
+            current_chunk.append(p)
+            current_len += len(p) + 2
+        else:
+            if current_chunk:
+                chunks.append("\n\n".join(current_chunk))
+                current_chunk = []
+                current_len = 0
+            if len(p) > max_len:
+                lines = p.split("\n")
+                for line in lines:
+                    if current_len + len(line) + 1 <= max_len:
+                        current_chunk.append(line)
+                        current_len += len(line) + 1
+                    else:
+                        if current_chunk:
+                            chunks.append("\n".join(current_chunk))
+                            current_chunk = []
+                            current_len = 0
+                        chunks.append(line[:max_len])
+            else:
+                current_chunk.append(p)
+                current_len = len(p)
+
+    if current_chunk:
+        chunks.append("\n\n".join(current_chunk))
+
+    return chunks if chunks else [text[:max_len]]
+
+
 def send_telegram_message(message: str, reply_markup: dict = None, chat_id: str = None) -> bool:
     """
-    Gửi tin nhắn Markdown tới Telegram thông qua Bot API.
+    Gửi tin nhắn Markdown tới Telegram thông qua Bot API (có chia nhỏ an toàn).
     """
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not chat_id:
@@ -55,7 +96,6 @@ def send_telegram_message(message: str, reply_markup: dict = None, chat_id: str 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": message,
         "parse_mode": "Markdown",
         "disable_web_page_preview": True
     }
@@ -63,20 +103,25 @@ def send_telegram_message(message: str, reply_markup: dict = None, chat_id: str 
         payload["reply_markup"] = reply_markup
         
     try:
-        # Nếu tin nhắn quá dài (giới hạn Telegram là 4096 ký tự), cắt đôi để gửi
-        if len(message) > 4000:
-            chunks = [message[i:i+4000] for i in range(0, len(message), 4000)]
-            for chunk in chunks:
-                requests.post(url, json={**payload, "text": chunk})
-            return True
-            
-        response = requests.post(url, json=payload)
-        if response.status_code == 200:
-            logger.info("Gửi thông báo Telegram thành công!")
-            return True
-        else:
-            logger.error(f"Lỗi gửi Telegram ({response.status_code}): {response.text}")
-            return False
+        chunks = _split_telegram_message(message, max_len=3800)
+        all_success = True
+        for i, chunk in enumerate(chunks):
+            chunk_payload = {**payload, "text": chunk}
+            if reply_markup and i < len(chunks) - 1:
+                chunk_payload.pop("reply_markup", None)
+
+            response = requests.post(url, json=chunk_payload, timeout=15)
+            if response.status_code == 200:
+                logger.info(f"Gửi thông báo Telegram (phần {i+1}/{len(chunks)}) thành công!")
+            else:
+                logger.error(f"Lỗi gửi Telegram chunk {i+1}/{len(chunks)} ({response.status_code}): {response.text}")
+                # Thử gửi lại ở chế độ raw text nếu markdown parse lỗi
+                raw_payload = {**chunk_payload, "parse_mode": None}
+                fallback_resp = requests.post(url, json=raw_payload, timeout=15)
+                if fallback_resp.status_code != 200:
+                    all_success = False
+
+        return all_success
     except Exception as e:
         logger.error(f"Lỗi kết nối gửi Telegram: {e}")
         return False

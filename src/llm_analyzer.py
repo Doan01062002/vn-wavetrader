@@ -52,27 +52,39 @@ def init_gemini():
 
 
 class _GroqWrapper:
-    """Wrapper cho Groq SDK chính thức — thêm rate limit và retry."""
+    """Wrapper cho Groq SDK chính thức — thêm rate limit, retry và fallback model."""
 
     def __init__(self, client, model_name: str = "llama-3.3-70b-versatile"):
         self._client = client
         self.model_name = model_name
+        self.fallback_model = "llama-3.1-8b-instant"
 
     @groq_limiter.throttle
     @api_retrier.retry
     def generate_content(self, prompt: str) -> object:
-        response = self._client.chat.completions.create(
-            model=self.model_name,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=4096
-        )
+        try:
+            response = self._client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=4096
+            )
+            content = response.choices[0].message.content
+        except Exception as e:
+            logger.warning(f"Model {self.model_name} gặp lỗi ({e}), chuyển sang fallback {self.fallback_model}...")
+            response = self._client.chat.completions.create(
+                model=self.fallback_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=2048
+            )
+            content = response.choices[0].message.content
 
         class ResponseMock:
             def __init__(self, text: str):
                 self.text = text
 
-        return ResponseMock(response.choices[0].message.content)
+        return ResponseMock(content)
 
 
 class _GroqHttpWrapper:

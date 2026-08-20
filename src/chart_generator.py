@@ -106,7 +106,16 @@ def generate_chart(df: pd.DataFrame, symbol: str, signals: dict = None) -> str:
 
     # Tick formatting
     tick_positions = list(range(0, len(df_chart), max(1, len(df_chart)//8)))
-    tick_labels = [df_chart.index[i].strftime('%d/%m') if i < len(df_chart) else '' for i in tick_positions]
+    tick_labels = []
+    for i in tick_positions:
+        if i < len(df_chart):
+            idx_val = df_chart.index[i]
+            if hasattr(idx_val, 'strftime'):
+                tick_labels.append(idx_val.strftime('%d/%m'))
+            else:
+                tick_labels.append(str(idx_val)[:5])
+        else:
+            tick_labels.append('')
     ax2.set_xticks(tick_positions)
     ax2.set_xticklabels(tick_labels, color='#a0a0a0', fontsize=8)
 
